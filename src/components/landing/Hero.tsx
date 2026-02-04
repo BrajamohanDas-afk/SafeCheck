@@ -1,11 +1,17 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { Shield, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import FileChecker from "@/components/FileChecker";
 import heroBg from "@/assets/hero-bg.jpg";
 
 const Hero = () => {
+  const [isFileCheckerOpen, setIsFileCheckerOpen] = useState(false);
+
   return (
-    <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
+    <>
+      <FileChecker isOpen={isFileCheckerOpen} onClose={() => setIsFileCheckerOpen(false)} />
+      <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
       {/* Background image with overlay */}
       <div 
         className="absolute inset-0 z-0"
@@ -73,7 +79,11 @@ const Hero = () => {
             transition={{ delay: 0.5, duration: 0.6 }}
             className="flex flex-col sm:flex-row gap-4 justify-center items-center"
           >
-            <Button size="lg" className="glow-primary text-lg px-8 py-6 font-semibold">
+            <Button 
+              size="lg" 
+              className="glow-primary text-lg px-8 py-6 font-semibold"
+              onClick={() => setIsFileCheckerOpen(true)}
+            >
               Check a File Now
               <ArrowRight className="w-5 h-5 ml-2" />
             </Button>
@@ -131,6 +141,7 @@ const Hero = () => {
         </motion.div>
       </div>
     </section>
+    </>
   );
 };
 
