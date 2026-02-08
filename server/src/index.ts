@@ -15,6 +15,22 @@ if(!VT_API_KEY){
     console.error({error : 'VIRUSTOTAL_API_KEY is not set in the env'});
     process.exit(1);
 }
+interface fileinterface {
+    filename: string,
+    contentType: string
+}
+
+interface VTUploadResponse {
+    data?: {
+        id?: string;
+        type?: string;
+    };
+}
+
+interface fileinterface {
+    filename: string,
+    contentType: string
+}
 
 //MIDDLEWARE
 
@@ -87,8 +103,7 @@ app.post('/api/scan', upload.single('file'), async(req:Request, res:Response)=>{
         formData.append('file', req.file.buffer, {
             filename: req.file.originalname,
             contentType: req.file.mimetype,  //This tells the type of the file 
-        } as any );
-
+        } as fileinterface );
         
         const response = await fetch('https://www.virustotal.com/api/v3/files',{
             method: 'POST',
@@ -99,14 +114,14 @@ app.post('/api/scan', upload.single('file'), async(req:Request, res:Response)=>{
             body: formData,
         });
 
-        const data = await response.json();
+        const data: VTUploadResponse = await response.json() as VTUploadResponse;
 
         if(!response.ok){
             console.error(`VT API error:`, data);
             return res.status(response.status).json(data);
         }
         
-        const analysisId = (data as any)?.data?.id || 'unknown';
+        const analysisId = data?.data?.id || 'unknown';
         console.log(`File uploaded successfully. Analysis ID: ${analysisId}`);
         return res.status(200).json(data);
     } catch(error){
