@@ -2,7 +2,7 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { Shield, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import FileChecker from "@/components/FileChecker";
+import FileChecker from "@/features/file-safety/ui/FileChecker";
 import heroBg from "@/assets/hero-bg.jpg";
 
 const Hero = () => {

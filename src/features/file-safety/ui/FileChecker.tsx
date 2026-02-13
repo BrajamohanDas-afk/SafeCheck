@@ -3,13 +3,17 @@ import { motion } from "framer-motion";
 import { Upload, FileCheck, Shield, AlertTriangle, XCircle, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { computeSHA256, formatFileSize } from "@/lib/hash";
-import { checkHashCache, uploadFileToScan, type VirusTotalFileResult } from "@/lib/virustotal";
+import { computeSHA256, formatFileSize } from "../crypto/sha256";
+import { checkHashCache, uploadFileToScan } from "../virustotal/client";
+import { scoreVirusTotalResult } from "../verdict/scoring";
+import type {
+  ScanStatus,
+  Verdict,
+  VerdictScoreBreakdown,
+  VirusTotalFileResult,
+} from "../types";
 
 const MAX_FILE_SIZE = 32 * 1024 * 1024; // 32MB
-
-type ScanStatus = "idle" | "hashing" | "checking-cache" | "uploading" | "complete" | "error";
-type Verdict = "safe" | "suspicious" | "dangerous" | null;
 
 interface FileCheckerProps {
   isOpen: boolean;
@@ -22,7 +26,8 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<VirusTotalFileResult | null>(null);
-  const [verdict, setVerdict] = useState<Verdict>(null);
+  const [verdict, setVerdict] = useState<Verdict | null>(null);
+  const [verdictBreakdown, setVerdictBreakdown] = useState<VerdictScoreBreakdown | null>(null);
   const [fileHash, setFileHash] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -33,29 +38,27 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
     setError(null);
     setResult(null);
     setVerdict(null);
+    setVerdictBreakdown(null);
     setFileHash(null);
   };
 
-  const calculateVerdict = (data: VirusTotalFileResult): Verdict => {
-    const stats = data.data?.attributes?.last_analysis_stats;
-    if (!stats) return null;
-
-    const { malicious, suspicious } = stats;
-    const total = malicious + suspicious;
-
-    if (total === 0) return "safe";
-    if (malicious >= 5 || total >= 10) return "dangerous";
-    return "suspicious";
+  const applyVerdictFromResult = (scanResult: VirusTotalFileResult) => {
+    const breakdown = scoreVirusTotalResult(scanResult);
+    setResult(scanResult);
+    setVerdict(breakdown.verdict);
+    setVerdictBreakdown(breakdown);
   };
 
   const handleFile = useCallback(async (selectedFile: File) => {
     setError(null);
     setResult(null);
     setVerdict(null);
+    setVerdictBreakdown(null);
 
-    // Validate file size
     if (selectedFile.size > MAX_FILE_SIZE) {
-      setError(`File is too large. Maximum size is 32MB, your file is ${formatFileSize(selectedFile.size)}`);
+      setError(
+        `File is too large. Maximum size is 32MB, your file is ${formatFileSize(selectedFile.size)}`
+      );
       return;
     }
 
@@ -64,33 +67,26 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
     setProgress(10);
 
     try {
-      // Step 1: Compute hash locally
       const hash = await computeSHA256(selectedFile);
       setFileHash(hash);
       setProgress(30);
 
-      // Step 2: Check cache first (doesn't consume quota)
       setStatus("checking-cache");
       setProgress(50);
 
       const cachedResult = await checkHashCache(hash);
-
-      if (cachedResult && cachedResult.data) {
-        // File found in cache!
-        setResult(cachedResult);
-        setVerdict(calculateVerdict(cachedResult));
+      if (cachedResult?.data) {
+        applyVerdictFromResult(cachedResult);
         setStatus("complete");
         setProgress(100);
         return;
       }
 
-      // Step 3: Not in cache, upload for scanning
       setStatus("uploading");
       setProgress(70);
 
       const scanResult = await uploadFileToScan(selectedFile);
-      setResult(scanResult);
-      setVerdict(calculateVerdict(scanResult));
+      applyVerdictFromResult(scanResult);
       setStatus("complete");
       setProgress(100);
     } catch (err) {
@@ -100,33 +96,33 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
   }, []);
 
   const handleDrop = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
-      e.preventDefault();
+    (event: React.DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
       setIsDragging(false);
 
-      const droppedFile = e.dataTransfer.files[0];
+      const droppedFile = event.dataTransfer.files[0];
       if (droppedFile) {
-        handleFile(droppedFile);
+        void handleFile(droppedFile);
       }
     },
     [handleFile]
   );
 
-  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
+  const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
     setIsDragging(true);
   }, []);
 
-  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
+  const handleDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
     setIsDragging(false);
   }, []);
 
   const handleFileInput = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const selectedFile = e.target.files?.[0];
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const selectedFile = event.target.files?.[0];
       if (selectedFile) {
-        handleFile(selectedFile);
+        void handleFile(selectedFile);
       }
     },
     [handleFile]
@@ -141,7 +137,8 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
       bg: "bg-safe/10",
       border: "border-safe/30",
       title: "Safe",
-      description: "No threats detected. This file appears to be safe.",
+      description: "Only expected/generic detections were found.",
+      action: "Proceed carefully. Run only if source URL is trusted.",
     },
     suspicious: {
       icon: AlertTriangle,
@@ -149,7 +146,8 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
       bg: "bg-suspicious/10",
       border: "border-suspicious/30",
       title: "Suspicious",
-      description: "Some security engines flagged this file. Exercise caution.",
+      description: "Suspicious engine signals were found.",
+      action: "Do not run yet. Re-verify source and hash before proceeding.",
     },
     dangerous: {
       icon: XCircle,
@@ -157,9 +155,12 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
       bg: "bg-dangerous/10",
       border: "border-dangerous/30",
       title: "Dangerous",
-      description: "Multiple threats detected. Do not run this file.",
+      description: "Multiple dangerous signals were detected.",
+      action: "Delete the file and do not execute it.",
     },
   };
+
+  const analysisStats = result?.data?.attributes?.last_analysis_stats;
 
   return (
     <motion.div
@@ -174,12 +175,12 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.95, opacity: 0 }}
         className="relative w-full max-w-2xl mx-4 p-8 rounded-2xl border border-border bg-card shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
       >
-        {/* Close button */}
         <button
           onClick={onClose}
           className="absolute top-4 right-4 p-2 rounded-lg hover:bg-muted transition-colors"
+          aria-label="Close"
         >
           <X className="w-5 h-5 text-muted-foreground" />
         </button>
@@ -195,7 +196,6 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
           </p>
         </div>
 
-        {/* Drop zone */}
         {status === "idle" && (
           <div
             onDrop={handleDrop}
@@ -212,22 +212,23 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
               onChange={handleFileInput}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
             />
-            <Upload className={`w-12 h-12 mx-auto mb-4 ${isDragging ? "text-primary" : "text-muted-foreground"}`} />
+            <Upload
+              className={`w-12 h-12 mx-auto mb-4 ${isDragging ? "text-primary" : "text-muted-foreground"}`}
+            />
             <p className="text-lg font-medium mb-2">
-              {isDragging ? "Drop your file here" : "Drag & drop a file here"}
+              {isDragging ? "Drop your file here" : "Drag and drop a file here"}
             </p>
             <p className="text-sm text-muted-foreground">or click to browse (max 32MB)</p>
           </div>
         )}
 
-        {/* Progress state */}
         {(status === "hashing" || status === "checking-cache" || status === "uploading") && (
           <div className="text-center py-8">
             <Loader2 className="w-12 h-12 mx-auto mb-4 text-primary animate-spin" />
             <p className="text-lg font-medium mb-2">
               {status === "hashing" && "Computing file hash..."}
               {status === "checking-cache" && "Checking VirusTotal cache..."}
-              {status === "uploading" && "Uploading to VirusTotal..."}
+              {status === "uploading" && "Submitting file and waiting for final scan..."}
             </p>
             {file && (
               <p className="text-sm text-muted-foreground mb-4">
@@ -238,7 +239,6 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
           </div>
         )}
 
-        {/* Error state */}
         {status === "error" && (
           <div className="text-center py-8">
             <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-dangerous/10 flex items-center justify-center">
@@ -252,7 +252,6 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
           </div>
         )}
 
-        {/* Result state */}
         {status === "complete" && verdict && (
           <div className="py-4">
             <div className={`rounded-xl p-6 ${verdictConfig[verdict].bg} ${verdictConfig[verdict].border} border`}>
@@ -268,36 +267,57 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
                     {verdictConfig[verdict].title}
                   </h3>
                   <p className="text-muted-foreground mt-1">{verdictConfig[verdict].description}</p>
+                  <p className="text-sm mt-2 font-medium">{verdictConfig[verdict].action}</p>
                 </div>
               </div>
 
-              {result?.data?.attributes?.last_analysis_stats && (
+              {analysisStats && (
                 <div className="mt-6 grid grid-cols-4 gap-4 text-center">
                   <div className="p-3 rounded-lg bg-background/50">
-                    <p className="text-2xl font-bold text-dangerous">
-                      {result.data.attributes.last_analysis_stats.malicious}
-                    </p>
+                    <p className="text-2xl font-bold text-dangerous">{analysisStats.malicious}</p>
                     <p className="text-xs text-muted-foreground">Malicious</p>
                   </div>
                   <div className="p-3 rounded-lg bg-background/50">
-                    <p className="text-2xl font-bold text-suspicious">
-                      {result.data.attributes.last_analysis_stats.suspicious}
-                    </p>
+                    <p className="text-2xl font-bold text-suspicious">{analysisStats.suspicious}</p>
                     <p className="text-xs text-muted-foreground">Suspicious</p>
                   </div>
                   <div className="p-3 rounded-lg bg-background/50">
-                    <p className="text-2xl font-bold text-safe">
-                      {result.data.attributes.last_analysis_stats.undetected}
-                    </p>
+                    <p className="text-2xl font-bold text-safe">{analysisStats.undetected}</p>
                     <p className="text-xs text-muted-foreground">Undetected</p>
                   </div>
                   <div className="p-3 rounded-lg bg-background/50">
-                    <p className="text-2xl font-bold text-muted-foreground">
-                      {result.data.attributes.last_analysis_stats.harmless}
-                    </p>
+                    <p className="text-2xl font-bold text-muted-foreground">{analysisStats.harmless}</p>
                     <p className="text-xs text-muted-foreground">Harmless</p>
                   </div>
                 </div>
+              )}
+
+              {verdictBreakdown && (
+                <details className="mt-4 rounded-lg bg-background/50 p-3">
+                  <summary className="cursor-pointer text-sm font-medium">Why this verdict?</summary>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Weighted score: <strong>{verdictBreakdown.totalScore.toFixed(1)}</strong>
+                  </p>
+                  {verdictBreakdown.topContributors.length > 0 ? (
+                    <div className="mt-2 space-y-1">
+                      {verdictBreakdown.topContributors.map((item) => (
+                        <p key={`${item.engine}-${item.result}`} className="text-xs">
+                          {item.engine}: "{item.result}" {"->"} {item.points.toFixed(1)} pts ({item.reason})
+                        </p>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs mt-2">No suspicious/dangerous contributors above zero points.</p>
+                  )}
+                  {verdictBreakdown.ignoredGenericFlags.length > 0 && (
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Ignored as generic:{" "}
+                      {verdictBreakdown.ignoredGenericFlags
+                        .map((item) => `${item.engine} (${item.result})`)
+                        .join(", ")}
+                    </p>
+                  )}
+                </details>
               )}
 
               {fileHash && (
@@ -306,6 +326,13 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
                   <p className="text-xs font-mono break-all">{fileHash}</p>
                 </div>
               )}
+
+              <div className="mt-4 p-3 rounded-lg border border-border/50 bg-background/60">
+                <p className="text-xs text-muted-foreground">
+                  SafeCheck cannot guarantee a file is safe. This verdict is risk assessment based on
+                  available signals.
+                </p>
+              </div>
             </div>
 
             <div className="flex gap-3 mt-6">
