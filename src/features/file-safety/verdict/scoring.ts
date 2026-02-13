@@ -101,7 +101,7 @@ function createReason(tier: EngineTier, riskCategory: RiskCategory): string {
     return `${tier.toUpperCase()} engine raised a suspicious classification`;
   }
 
-  return "Generic crack-related classification ignored";
+  return "Generic software-tool classification ignored";
 }
 
 export function scoreVirusTotalResult(

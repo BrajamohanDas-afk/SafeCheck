@@ -55,8 +55,8 @@ const Hero = () => {
             transition={{ delay: 0.3, duration: 0.6 }}
             className="font-display text-5xl md:text-7xl font-bold mb-6 leading-tight"
           >
-            Know if your file is{" "}
-            <span className="text-gradient">safe to run</span>
+            Verify Downloaded Files{" "}
+            <span className="text-gradient">Before You Run Them</span>
           </motion.h1>
 
           {/* Subheadline */}
@@ -66,7 +66,8 @@ const Hero = () => {
             transition={{ delay: 0.4, duration: 0.6 }}
             className="text-lg md:text-xl text-muted-foreground mb-10 max-w-2xl mx-auto leading-relaxed"
           >
-            Drop a file, paste a URL, or upload an executable. Get a clear verdict in seconds: 
+            A security tool for executables downloaded from untrusted sources.
+            Run scan, hash, and torrent checks before installation. Get a clear verdict in seconds:
             <span className="text-safe font-medium"> Safe</span>, 
             <span className="text-suspicious font-medium"> Suspicious</span>, or 
             <span className="text-dangerous font-medium"> Dangerous</span>.

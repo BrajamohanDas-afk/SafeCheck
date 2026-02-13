@@ -1,19 +1,36 @@
-import { useState, useCallback } from "react";
+import { useMemo, useState, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Upload, FileCheck, Shield, AlertTriangle, XCircle, Loader2, X } from "lucide-react";
+import {
+  Upload,
+  FileCheck,
+  Shield,
+  AlertTriangle,
+  XCircle,
+  Loader2,
+  X,
+  FileArchive,
+  Search,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { computeSHA256, formatFileSize } from "../crypto/sha256";
 import { checkHashCache, uploadFileToScan } from "../virustotal/client";
 import { scoreVirusTotalResult } from "../verdict/scoring";
+import { compareKnownHash } from "../hash/compare";
+import { analyzeMagnetLink, analyzeTorrentFile } from "../torrent/analyzer";
 import type {
   ScanStatus,
   Verdict,
   VerdictScoreBreakdown,
   VirusTotalFileResult,
+  TorrentAnalysisResult,
 } from "../types";
 
 const MAX_FILE_SIZE = 32 * 1024 * 1024; // 32MB
+const MAX_TORRENT_PREVIEW_FILES = 25;
 
 interface FileCheckerProps {
   isOpen: boolean;
@@ -24,18 +41,24 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<ScanStatus>("idle");
   const [progress, setProgress] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
   const [result, setResult] = useState<VirusTotalFileResult | null>(null);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [verdictBreakdown, setVerdictBreakdown] = useState<VerdictScoreBreakdown | null>(null);
   const [fileHash, setFileHash] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [knownHashInput, setKnownHashInput] = useState("");
 
-  const resetState = () => {
+  const [magnetInput, setMagnetInput] = useState("");
+  const [torrentResult, setTorrentResult] = useState<TorrentAnalysisResult | null>(null);
+  const [torrentError, setTorrentError] = useState<string | null>(null);
+  const [isParsingTorrent, setIsParsingTorrent] = useState(false);
+
+  const resetScanState = () => {
     setFile(null);
     setStatus("idle");
     setProgress(0);
-    setError(null);
+    setScanError(null);
     setResult(null);
     setVerdict(null);
     setVerdictBreakdown(null);
@@ -49,14 +72,14 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
     setVerdictBreakdown(breakdown);
   };
 
-  const handleFile = useCallback(async (selectedFile: File) => {
-    setError(null);
+  const handleFileScan = useCallback(async (selectedFile: File) => {
+    setScanError(null);
     setResult(null);
     setVerdict(null);
     setVerdictBreakdown(null);
 
     if (selectedFile.size > MAX_FILE_SIZE) {
-      setError(
+      setScanError(
         `File is too large. Maximum size is 32MB, your file is ${formatFileSize(selectedFile.size)}`
       );
       return;
@@ -89,9 +112,9 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
       applyVerdictFromResult(scanResult);
       setStatus("complete");
       setProgress(100);
-    } catch (err) {
+    } catch (error) {
       setStatus("error");
-      setError(err instanceof Error ? err.message : "An unknown error occurred");
+      setScanError(error instanceof Error ? error.message : "An unknown scan error occurred.");
     }
   }, []);
 
@@ -102,10 +125,10 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
 
       const droppedFile = event.dataTransfer.files[0];
       if (droppedFile) {
-        void handleFile(droppedFile);
+        void handleFileScan(droppedFile);
       }
     },
-    [handleFile]
+    [handleFileScan]
   );
 
   const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
@@ -118,14 +141,49 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
     setIsDragging(false);
   }, []);
 
-  const handleFileInput = useCallback(
+  const handleScanFileInput = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const selectedFile = event.target.files?.[0];
       if (selectedFile) {
-        void handleFile(selectedFile);
+        void handleFileScan(selectedFile);
       }
     },
-    [handleFile]
+    [handleFileScan]
+  );
+
+  const handleTorrentFileInput = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0];
+    if (!selectedFile) return;
+
+    setIsParsingTorrent(true);
+    setTorrentError(null);
+
+    try {
+      const parsed = await analyzeTorrentFile(selectedFile);
+      setTorrentResult(parsed);
+    } catch (error) {
+      setTorrentResult(null);
+      setTorrentError(error instanceof Error ? error.message : "Failed to parse torrent file.");
+    } finally {
+      setIsParsingTorrent(false);
+    }
+  };
+
+  const handleMagnetAnalyze = () => {
+    setTorrentError(null);
+
+    try {
+      const parsed = analyzeMagnetLink(magnetInput);
+      setTorrentResult(parsed);
+    } catch (error) {
+      setTorrentResult(null);
+      setTorrentError(error instanceof Error ? error.message : "Failed to parse magnet link.");
+    }
+  };
+
+  const hashComparison = useMemo(
+    () => compareKnownHash(knownHashInput, fileHash),
+    [knownHashInput, fileHash]
   );
 
   if (!isOpen) return null;
@@ -138,7 +196,7 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
       border: "border-safe/30",
       title: "Safe",
       description: "Only expected/generic detections were found.",
-      action: "Proceed carefully. Run only if source URL is trusted.",
+      action: "Proceed carefully and verify file integrity before running.",
     },
     suspicious: {
       icon: AlertTriangle,
@@ -147,7 +205,7 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
       border: "border-suspicious/30",
       title: "Suspicious",
       description: "Suspicious engine signals were found.",
-      action: "Do not run yet. Re-verify source and hash before proceeding.",
+      action: "Do not run yet. Re-check the file hash and run deeper scans.",
     },
     dangerous: {
       icon: XCircle,
@@ -158,6 +216,14 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
       description: "Multiple dangerous signals were detected.",
       action: "Delete the file and do not execute it.",
     },
+  };
+
+  const hashStatusStyle = {
+    idle: "text-muted-foreground",
+    invalid: "text-dangerous",
+    "waiting-file-hash": "text-suspicious",
+    match: "text-safe",
+    mismatch: "text-dangerous",
   };
 
   const analysisStats = result?.data?.attributes?.last_analysis_stats;
@@ -174,7 +240,7 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.95, opacity: 0 }}
-        className="relative w-full max-w-2xl mx-4 p-8 rounded-2xl border border-border bg-card shadow-2xl"
+        className="relative w-full max-w-4xl max-h-[90vh] overflow-y-auto mx-4 p-8 rounded-2xl border border-border bg-card shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         <button
@@ -185,166 +251,296 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
           <X className="w-5 h-5 text-muted-foreground" />
         </button>
 
-        <div className="text-center mb-8">
+        <div className="text-center mb-8 pr-8">
           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-primary/30 bg-primary/10 mb-4">
             <Shield className="w-4 h-4 text-primary" />
-            <span className="text-sm font-medium text-primary">File Safety Scanner</span>
+            <span className="text-sm font-medium text-primary">File Safety Toolkit</span>
           </div>
-          <h2 className="text-2xl font-bold font-display">Check if your file is safe</h2>
+          <h2 className="text-2xl font-bold font-display">Scan + Hash + Torrent Checks</h2>
           <p className="text-muted-foreground mt-2">
-            Drop a file below to scan it against 70+ antivirus engines
+            Use multiple checks together for better judgment, not blind trust.
           </p>
         </div>
 
-        {status === "idle" && (
-          <div
-            onDrop={handleDrop}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            className={`relative border-2 border-dashed rounded-xl p-12 text-center transition-all cursor-pointer ${
-              isDragging
-                ? "border-primary bg-primary/5"
-                : "border-border hover:border-primary/50 hover:bg-muted/50"
-            }`}
-          >
-            <input
-              type="file"
-              onChange={handleFileInput}
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-            />
-            <Upload
-              className={`w-12 h-12 mx-auto mb-4 ${isDragging ? "text-primary" : "text-muted-foreground"}`}
-            />
-            <p className="text-lg font-medium mb-2">
-              {isDragging ? "Drop your file here" : "Drag and drop a file here"}
-            </p>
-            <p className="text-sm text-muted-foreground">or click to browse (max 32MB)</p>
-          </div>
-        )}
+        <Tabs defaultValue="scan" className="space-y-4">
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="scan" className="gap-2">
+              <Search className="w-4 h-4" />
+              File Scan + Hash
+            </TabsTrigger>
+            <TabsTrigger value="torrent" className="gap-2">
+              <FileArchive className="w-4 h-4" />
+              Torrent Analyzer
+            </TabsTrigger>
+          </TabsList>
 
-        {(status === "hashing" || status === "checking-cache" || status === "uploading") && (
-          <div className="text-center py-8">
-            <Loader2 className="w-12 h-12 mx-auto mb-4 text-primary animate-spin" />
-            <p className="text-lg font-medium mb-2">
-              {status === "hashing" && "Computing file hash..."}
-              {status === "checking-cache" && "Checking VirusTotal cache..."}
-              {status === "uploading" && "Submitting file and waiting for final scan..."}
-            </p>
-            {file && (
-              <p className="text-sm text-muted-foreground mb-4">
-                {file.name} ({formatFileSize(file.size)})
-              </p>
-            )}
-            <Progress value={progress} className="w-full max-w-xs mx-auto" />
-          </div>
-        )}
-
-        {status === "error" && (
-          <div className="text-center py-8">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-dangerous/10 flex items-center justify-center">
-              <XCircle className="w-8 h-8 text-dangerous" />
-            </div>
-            <p className="text-lg font-medium text-dangerous mb-2">Scan Failed</p>
-            <p className="text-sm text-muted-foreground mb-6">{error}</p>
-            <Button onClick={resetState} variant="outline">
-              Try Again
-            </Button>
-          </div>
-        )}
-
-        {status === "complete" && verdict && (
-          <div className="py-4">
-            <div className={`rounded-xl p-6 ${verdictConfig[verdict].bg} ${verdictConfig[verdict].border} border`}>
-              <div className="flex items-start gap-4">
-                <div className={`w-14 h-14 rounded-xl flex items-center justify-center ${verdictConfig[verdict].bg}`}>
-                  {(() => {
-                    const Icon = verdictConfig[verdict].icon;
-                    return <Icon className={`w-7 h-7 ${verdictConfig[verdict].color}`} />;
-                  })()}
-                </div>
-                <div className="flex-1">
-                  <h3 className={`text-xl font-bold font-display ${verdictConfig[verdict].color}`}>
-                    {verdictConfig[verdict].title}
-                  </h3>
-                  <p className="text-muted-foreground mt-1">{verdictConfig[verdict].description}</p>
-                  <p className="text-sm mt-2 font-medium">{verdictConfig[verdict].action}</p>
-                </div>
-              </div>
-
-              {analysisStats && (
-                <div className="mt-6 grid grid-cols-4 gap-4 text-center">
-                  <div className="p-3 rounded-lg bg-background/50">
-                    <p className="text-2xl font-bold text-dangerous">{analysisStats.malicious}</p>
-                    <p className="text-xs text-muted-foreground">Malicious</p>
-                  </div>
-                  <div className="p-3 rounded-lg bg-background/50">
-                    <p className="text-2xl font-bold text-suspicious">{analysisStats.suspicious}</p>
-                    <p className="text-xs text-muted-foreground">Suspicious</p>
-                  </div>
-                  <div className="p-3 rounded-lg bg-background/50">
-                    <p className="text-2xl font-bold text-safe">{analysisStats.undetected}</p>
-                    <p className="text-xs text-muted-foreground">Undetected</p>
-                  </div>
-                  <div className="p-3 rounded-lg bg-background/50">
-                    <p className="text-2xl font-bold text-muted-foreground">{analysisStats.harmless}</p>
-                    <p className="text-xs text-muted-foreground">Harmless</p>
-                  </div>
-                </div>
-              )}
-
-              {verdictBreakdown && (
-                <details className="mt-4 rounded-lg bg-background/50 p-3">
-                  <summary className="cursor-pointer text-sm font-medium">Why this verdict?</summary>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    Weighted score: <strong>{verdictBreakdown.totalScore.toFixed(1)}</strong>
-                  </p>
-                  {verdictBreakdown.topContributors.length > 0 ? (
-                    <div className="mt-2 space-y-1">
-                      {verdictBreakdown.topContributors.map((item) => (
-                        <p key={`${item.engine}-${item.result}`} className="text-xs">
-                          {item.engine}: "{item.result}" {"->"} {item.points.toFixed(1)} pts ({item.reason})
-                        </p>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs mt-2">No suspicious/dangerous contributors above zero points.</p>
-                  )}
-                  {verdictBreakdown.ignoredGenericFlags.length > 0 && (
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Ignored as generic:{" "}
-                      {verdictBreakdown.ignoredGenericFlags
-                        .map((item) => `${item.engine} (${item.result})`)
-                        .join(", ")}
-                    </p>
-                  )}
-                </details>
-              )}
-
-              {fileHash && (
-                <div className="mt-4 p-3 rounded-lg bg-background/50">
-                  <p className="text-xs text-muted-foreground mb-1">SHA-256 Hash</p>
-                  <p className="text-xs font-mono break-all">{fileHash}</p>
-                </div>
-              )}
-
-              <div className="mt-4 p-3 rounded-lg border border-border/50 bg-background/60">
-                <p className="text-xs text-muted-foreground">
-                  SafeCheck cannot guarantee a file is safe. This verdict is risk assessment based on
-                  available signals.
+          <TabsContent value="scan" className="space-y-4">
+            {status === "idle" && (
+              <div
+                onDrop={handleDrop}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                className={`relative border-2 border-dashed rounded-xl p-10 text-center transition-all cursor-pointer ${
+                  isDragging
+                    ? "border-primary bg-primary/5"
+                    : "border-border hover:border-primary/50 hover:bg-muted/50"
+                }`}
+              >
+                <input
+                  type="file"
+                  onChange={handleScanFileInput}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                <Upload
+                  className={`w-10 h-10 mx-auto mb-3 ${isDragging ? "text-primary" : "text-muted-foreground"}`}
+                />
+                <p className="text-base font-medium mb-1">
+                  {isDragging ? "Drop your file here" : "Drag and drop file to scan"}
                 </p>
+                <p className="text-sm text-muted-foreground">or click to browse (max 32MB)</p>
               </div>
+            )}
+
+            {(status === "hashing" || status === "checking-cache" || status === "uploading") && (
+              <div className="text-center py-8 rounded-xl border border-border bg-background/40">
+                <Loader2 className="w-10 h-10 mx-auto mb-3 text-primary animate-spin" />
+                <p className="text-base font-medium mb-2">
+                  {status === "hashing" && "Computing file hash..."}
+                  {status === "checking-cache" && "Checking VirusTotal hash cache..."}
+                  {status === "uploading" && "Uploading and waiting for final VirusTotal report..."}
+                </p>
+                {file && (
+                  <p className="text-sm text-muted-foreground mb-4">
+                    {file.name} ({formatFileSize(file.size)})
+                  </p>
+                )}
+                <Progress value={progress} className="w-full max-w-xs mx-auto" />
+              </div>
+            )}
+
+            {status === "error" && (
+              <div className="rounded-xl border border-dangerous/30 bg-dangerous/10 p-4">
+                <p className="text-dangerous font-medium">Scan failed</p>
+                <p className="text-sm text-muted-foreground mt-1">{scanError}</p>
+                <Button onClick={resetScanState} variant="outline" className="mt-3">
+                  Try Again
+                </Button>
+              </div>
+            )}
+
+            {status === "complete" && verdict && (
+              <div className={`rounded-xl p-6 ${verdictConfig[verdict].bg} ${verdictConfig[verdict].border} border`}>
+                <div className="flex items-start gap-4">
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${verdictConfig[verdict].bg}`}>
+                    {(() => {
+                      const Icon = verdictConfig[verdict].icon;
+                      return <Icon className={`w-6 h-6 ${verdictConfig[verdict].color}`} />;
+                    })()}
+                  </div>
+                  <div className="flex-1">
+                    <h3 className={`text-xl font-bold font-display ${verdictConfig[verdict].color}`}>
+                      {verdictConfig[verdict].title}
+                    </h3>
+                    <p className="text-muted-foreground mt-1">{verdictConfig[verdict].description}</p>
+                    <p className="text-sm mt-2 font-medium">{verdictConfig[verdict].action}</p>
+                  </div>
+                </div>
+
+                {analysisStats && (
+                  <div className="mt-5 grid grid-cols-4 gap-3 text-center">
+                    <div className="p-3 rounded-lg bg-background/50">
+                      <p className="text-xl font-bold text-dangerous">{analysisStats.malicious}</p>
+                      <p className="text-xs text-muted-foreground">Malicious</p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-background/50">
+                      <p className="text-xl font-bold text-suspicious">{analysisStats.suspicious}</p>
+                      <p className="text-xs text-muted-foreground">Suspicious</p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-background/50">
+                      <p className="text-xl font-bold text-safe">{analysisStats.undetected}</p>
+                      <p className="text-xs text-muted-foreground">Undetected</p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-background/50">
+                      <p className="text-xl font-bold text-muted-foreground">{analysisStats.harmless}</p>
+                      <p className="text-xs text-muted-foreground">Harmless</p>
+                    </div>
+                  </div>
+                )}
+
+                {verdictBreakdown && (
+                  <details className="mt-4 rounded-lg bg-background/50 p-3">
+                    <summary className="cursor-pointer text-sm font-medium">Why this verdict?</summary>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Weighted score: <strong>{verdictBreakdown.totalScore.toFixed(1)}</strong>
+                    </p>
+                    {verdictBreakdown.topContributors.length > 0 ? (
+                      <div className="mt-2 space-y-1">
+                        {verdictBreakdown.topContributors.map((item) => (
+                          <p key={`${item.engine}-${item.result}`} className="text-xs">
+                            {item.engine}: "{item.result}" {"->"} {item.points.toFixed(1)} pts ({item.reason})
+                          </p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs mt-2">No suspicious/dangerous contributors above zero points.</p>
+                    )}
+                    {verdictBreakdown.ignoredGenericFlags.length > 0 && (
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Ignored as generic:{" "}
+                        {verdictBreakdown.ignoredGenericFlags
+                          .map((item) => `${item.engine} (${item.result})`)
+                          .join(", ")}
+                      </p>
+                    )}
+                  </details>
+                )}
+
+                <div className="mt-4 p-3 rounded-lg border border-border/50 bg-background/60">
+                  <p className="text-xs text-muted-foreground">
+                    SafeCheck cannot guarantee a file is safe. This is risk assessment based on available signals.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-xl border border-border p-4 bg-background/40">
+              <label className="text-sm font-medium">Known-good SHA-256 hash compare</label>
+              <Input
+                className="mt-2 font-mono text-xs"
+                placeholder="Paste expected SHA-256 hash from source page"
+                value={knownHashInput}
+                onChange={(event) => setKnownHashInput(event.target.value)}
+              />
+              <p className={`text-xs mt-2 ${hashStatusStyle[hashComparison.status]}`}>{hashComparison.message}</p>
+              {fileHash && (
+                <p className="text-xs mt-2">
+                  Computed file hash: <span className="font-mono break-all">{fileHash}</span>
+                </p>
+              )}
             </div>
 
-            <div className="flex gap-3 mt-6">
-              <Button onClick={resetState} variant="outline" className="flex-1">
-                Scan Another File
+            <div className="flex gap-3">
+              <Button onClick={resetScanState} variant="outline" className="flex-1">
+                Reset Scan State
               </Button>
               <Button onClick={onClose} className="flex-1">
-                Done
+                Close
               </Button>
             </div>
-          </div>
-        )}
+          </TabsContent>
+
+          <TabsContent value="torrent" className="space-y-4">
+            <div className="rounded-xl border border-border p-4 bg-background/40">
+              <label className="text-sm font-medium">Analyze .torrent file</label>
+              <Input type="file" accept=".torrent" className="mt-2" onChange={handleTorrentFileInput} />
+              <p className="text-xs text-muted-foreground mt-2">
+                Parsed client-side only. Torrent anomalies are advisory, not proof of malware.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-border p-4 bg-background/40">
+              <label className="text-sm font-medium">Analyze magnet link</label>
+              <Textarea
+                className="mt-2"
+                placeholder="magnet:?xt=urn:btih:..."
+                value={magnetInput}
+                onChange={(event) => setMagnetInput(event.target.value)}
+              />
+              <div className="mt-2 flex justify-end">
+                <Button onClick={handleMagnetAnalyze}>Analyze Magnet</Button>
+              </div>
+            </div>
+
+            {isParsingTorrent && (
+              <div className="rounded-xl border border-border bg-background/40 p-4 text-sm flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                Parsing torrent metadata...
+              </div>
+            )}
+
+            {torrentError && (
+              <div className="rounded-xl border border-dangerous/30 bg-dangerous/10 p-4 text-sm text-dangerous">
+                {torrentError}
+              </div>
+            )}
+
+            {torrentResult && (
+              <div className="rounded-xl border border-border p-4 bg-background/40 space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="p-3 rounded-lg bg-muted/50">
+                    <p className="text-xs text-muted-foreground">Source Type</p>
+                    <p className="text-sm font-medium">{torrentResult.source}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-muted/50">
+                    <p className="text-xs text-muted-foreground">Trackers</p>
+                    <p className="text-sm font-medium">{torrentResult.trackerCount}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-muted/50">
+                    <p className="text-xs text-muted-foreground">Files</p>
+                    <p className="text-sm font-medium">{torrentResult.files.length}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-muted/50">
+                    <p className="text-xs text-muted-foreground">Total Size</p>
+                    <p className="text-sm font-medium">{formatFileSize(torrentResult.totalSize)}</p>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-sm font-medium">Name</p>
+                  <p className="text-sm text-muted-foreground">{torrentResult.name}</p>
+                  {torrentResult.infoHash && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Info hash: <span className="font-mono">{torrentResult.infoHash}</span>
+                    </p>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-suspicious/30 bg-suspicious/10 p-3">
+                  <p className="text-sm font-medium text-suspicious">Anomaly advisories</p>
+                  {torrentResult.anomalies.length === 0 ? (
+                    <p className="text-xs mt-1">No anomaly rules triggered from current metadata.</p>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      {torrentResult.anomalies.map((anomaly) => (
+                        <div key={anomaly.id} className="text-xs">
+                          <p className="font-medium">{anomaly.label}</p>
+                          <p>{anomaly.details}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {torrentResult.files.length > 0 && (
+                  <div>
+                    <p className="text-sm font-medium mb-2">
+                      File list preview ({Math.min(torrentResult.files.length, MAX_TORRENT_PREVIEW_FILES)} of{" "}
+                      {torrentResult.files.length})
+                    </p>
+                    <div className="max-h-56 overflow-auto rounded-lg border border-border">
+                      <table className="w-full text-xs">
+                        <thead className="bg-muted/40 sticky top-0">
+                          <tr>
+                            <th className="text-left p-2">Path</th>
+                            <th className="text-left p-2">Size</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {torrentResult.files.slice(0, MAX_TORRENT_PREVIEW_FILES).map((entry) => (
+                            <tr key={`${entry.path}-${entry.size}`} className="border-t border-border/50">
+                              <td className="p-2 font-mono">{entry.path}</td>
+                              <td className="p-2">{formatFileSize(entry.size)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
       </motion.div>
     </motion.div>
   );

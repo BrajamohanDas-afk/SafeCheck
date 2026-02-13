@@ -60,3 +60,31 @@ export interface VerdictScoreBreakdown {
   topContributors: ScoreContributor[];
   ignoredGenericFlags: ScoreContributor[];
 }
+
+export interface HashCompareResult {
+  status: "idle" | "invalid" | "waiting-file-hash" | "match" | "mismatch";
+  normalizedInput: string;
+  message: string;
+}
+
+export interface TorrentFileEntry {
+  path: string;
+  size: number;
+  extension: string;
+}
+
+export interface TorrentAnomaly {
+  id: string;
+  label: string;
+  details: string;
+}
+
+export interface TorrentAnalysisResult {
+  source: "torrent-file" | "magnet-link";
+  name: string;
+  infoHash?: string;
+  trackerCount: number;
+  totalSize: number;
+  files: TorrentFileEntry[];
+  anomalies: TorrentAnomaly[];
+}

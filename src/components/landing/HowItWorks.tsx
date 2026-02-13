@@ -1,18 +1,18 @@
 import { motion } from "framer-motion";
-import { Link2, Upload, CheckCircle, ArrowDown } from "lucide-react";
+import { Upload, FileArchive, CheckCircle, ArrowDown } from "lucide-react";
 
 const steps = [
   {
     step: 1,
-    icon: Link2,
-    title: "Paste your source URL",
-    description: "Enter the URL where you downloaded the file. We'll instantly check if it's a legitimate source or a known fake site.",
+    icon: Upload,
+    title: "Upload your file",
+    description: "Drop the executable file (max 32MB). SafeCheck computes SHA-256 and checks VirusTotal cache first.",
   },
   {
     step: 2,
-    icon: Upload,
-    title: "Upload your file",
-    description: "Drop the executable or DLL file (max 32MB). We'll compute its hash and scan it against 70+ antivirus engines.",
+    icon: FileArchive,
+    title: "Analyze torrent metadata",
+    description: "Optionally inspect .torrent or magnet metadata when validating legal software or media distributions.",
   },
   {
     step: 3,

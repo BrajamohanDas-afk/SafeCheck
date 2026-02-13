@@ -1,10 +1,7 @@
-import type { Express } from "express";
-import fetch, { type RequestInit, type Response } from "node-fetch";
-import FormData from "form-data";
-
 const VT_BASE_URL = "https://www.virustotal.com/api/v3";
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLL_TIME_MS = 60000;
+const MAX_FILE_SIZE = 32 * 1024 * 1024;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -41,6 +38,13 @@ export class VirusTotalServiceError extends Error {
 export class VirusTotalService {
   constructor(private readonly apiKey: string) {}
 
+  private getHeaders(additionalHeaders: HeadersInit = {}): HeadersInit {
+    return {
+      "x-apikey": this.apiKey,
+      ...additionalHeaders,
+    };
+  }
+
   private async parseJson(response: Response): Promise<unknown> {
     try {
       return await response.json();
@@ -51,23 +55,16 @@ export class VirusTotalService {
 
   private extractErrorMessage(payload: unknown): string | null {
     if (!isRecord(payload)) return null;
-
     const error = payload.error;
     if (!isRecord(error)) return null;
-
-    const message = error.message;
-    return typeof message === "string" ? message : null;
+    return typeof error.message === "string" ? error.message : null;
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
-    const headers = {
-      "x-apikey": this.apiKey,
-      ...(init.headers as Record<string, string>),
-    };
-
     const response = await fetch(`${VT_BASE_URL}${path}`, {
       ...init,
-      headers,
+      headers: this.getHeaders(init.headers ?? {}),
+      cache: "no-store",
     });
 
     const payload = await this.parseJson(response);
@@ -90,16 +87,16 @@ export class VirusTotalService {
     }
   }
 
-  private async uploadFile(file: Express.Multer.File): Promise<string> {
+  private async uploadFile(file: File): Promise<string> {
+    if (file.size > MAX_FILE_SIZE) {
+      throw new VirusTotalServiceError("File exceeds 32MB limit", 400);
+    }
+
     const formData = new FormData();
-    formData.append("file", file.buffer, {
-      filename: file.originalname,
-      contentType: file.mimetype,
-    });
+    formData.append("file", file, file.name);
 
     const payload = await this.request("/files", {
       method: "POST",
-      headers: formData.getHeaders(),
       body: formData,
     });
 
@@ -156,10 +153,19 @@ export class VirusTotalService {
     return this.request(`/files/${fileId}`);
   }
 
-  async scanFileAndFetchReport(file: Express.Multer.File): Promise<unknown> {
+  async scanFileAndFetchReport(file: File): Promise<unknown> {
     const analysisId = await this.uploadFile(file);
     const analysisPayload = await this.waitForAnalysisCompletion(analysisId);
     const fileId = this.extractFileIdFromAnalysis(analysisPayload);
     return this.getFileReport(fileId);
   }
+}
+
+export function getVirusTotalService(): VirusTotalService {
+  const apiKey = process.env.VIRUSTOTAL_API_KEY;
+  if (!apiKey) {
+    throw new VirusTotalServiceError("VIRUSTOTAL_API_KEY is not configured", 500);
+  }
+
+  return new VirusTotalService(apiKey);
 }

@@ -5,7 +5,7 @@ import HowItWorks from "@/components/landing/HowItWorks";
 import CTA from "@/components/landing/CTA";
 import Footer from "@/components/landing/Footer";
 
-const Index = () => {
+export default function LandingPage() {
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
@@ -16,6 +16,4 @@ const Index = () => {
       <Footer />
     </div>
   );
-};
-
-export default Index;
+}

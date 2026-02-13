@@ -1,32 +1,32 @@
 import { motion } from "framer-motion";
-import { Shield, Link, FileSearch, Hash, AlertTriangle } from "lucide-react";
+import { Shield, FileSearch, Hash, AlertTriangle, FileArchive } from "lucide-react";
 
 const features = [
   {
-    icon: Link,
-    title: "URL Verification",
-    description: "Instantly check if your download source is legitimate or a known fake site. Get warned before you even open the file.",
+    icon: FileArchive,
+    title: "Torrent Metadata Analysis",
+    description: "Preview file contents in Linux ISOs, open software distributions, and public domain media torrents.",
     color: "text-primary",
     bgColor: "bg-primary/10",
   },
   {
     icon: FileSearch,
     title: "Smart Scan Analysis",
-    description: "Powered by 70+ antivirus engines with a weighted scoring system. We interpret the results so you don't have to.",
+    description: "Verify software downloaded from mirror links or unofficial sources with VirusTotal engine results.",
     color: "text-accent",
     bgColor: "bg-accent/10",
   },
   {
     icon: Hash,
     title: "Hash Verification",
-    description: "Compare SHA-256 hashes locally in your browser. Verify file integrity without uploading anything.",
+    description: "Confirm cloud backups and downloaded installers were not corrupted or tampered with in transfer.",
     color: "text-safe",
     bgColor: "bg-safe/10",
   },
   {
     icon: AlertTriangle,
     title: "Clear Verdicts",
-    description: "No confusing technical jargon. Get a simple Safe, Suspicious, or Dangerous verdict with plain-English explanations.",
+    description: "Interpret complex antivirus outputs for non-technical users with a weighted Safe/Suspicious/Dangerous verdict.",
     color: "text-suspicious",
     bgColor: "bg-suspicious/10",
   },

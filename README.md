@@ -1,229 +1,130 @@
 # SafeCheck
 
-**A browser-based file assessment tool that helps users inspect repacks/cracks for suspicious characteristics BEFORE download/install.**
+Verify downloaded files before you run them.
 
-SafeCheck automates common manual checks — hashes, URL reputation, VirusTotal interpretation — into a simple workflow. **It is not a guarantee of safety** and cannot make pirated content "safe".
+SafeCheck is a file integrity and security scanner for executables from untrusted sources. It combines VirusTotal analysis, local SHA-256 verification, and torrent metadata inspection in one app.
 
 ![SafeCheck Banner](./SafeCheck.png)
 
-> **Who this is for:** People new to downloading repacks who don't know how to interpret VirusTotal flags, verify hashes, or identify fake sites. If you already do these checks manually, you probably don't need this.
+## Architecture (Important)
 
----
+- Single Next.js app for both UI and API.
+- No separate Express backend.
+- No separate `server/` folder/service required.
+- API logic runs in Next.js route handlers (`src/app/api/*`) on Node.js runtime.
 
-## Table of Contents
+## Core Features
 
-- [What It Does](#what-it-does)
-- [What It Doesn't Do](#what-it-doesnt-do)
-- [Screenshots](#screenshots)
-- [Privacy & Security](#privacy--security)
-- [Self-Hosting](#self-hosting)
-- [Getting Started](#getting-started)
-- [How the Verdict Works](#how-the-verdict-works)
-- [Roadmap](#roadmap)
+- VirusTotal scan with hash-cache-first flow.
+- Weighted verdict engine (`Safe`, `Suspicious`, `Dangerous`) with explanation.
+- Local SHA-256 hash generation and hash compare.
+- Torrent and magnet metadata analyzer with advisory anomaly flags.
 
----
+## Legitimate Use Cases
 
-## What It Does
+1. Verifying open-source installers from mirror links.
+2. Corporate IT security training demos.
+3. Academic antivirus false-positive research.
+4. Checking cloud backup file integrity after download.
+5. Validating legal torrents (Linux ISOs, public domain media).
 
-| Feature | How It Works |
-|---|---|
-| **Source URL Checker** | Paste the download URL. Instantly checks against a database of verified legitimate and known fake sites. |
-| **VirusTotal Scan** | Upload a file (under 32MB). Scans through 70+ engines and interprets results using weighted scoring — not raw flag counts. |
-| **Hash Verification** | Paste a known-good hash. Tool computes SHA-256 locally in your browser. Match or mismatch, instant answer. |
-| **Torrent Parser** | Drop a `.torrent` file. See the full file list before downloading. Flags unusual files (unexpected executables, oversized DLLs). |
+## Environment Setup
 
----
+Create `.env.local` at the project root (same level as `package.json`):
 
-## What It Doesn't Do
+```env
+VIRUSTOTAL_API_KEY=your_virustotal_api_key
 
-❌ **Does NOT guarantee a file is safe** — No tool can. This is risk assessment, not a security guarantee.
+# Optional Supabase (for persistence)
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_public_anon_key
+SUPABASE_URL=https://your-project-id.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+```
 
-❌ **Is NOT a replacement for expert analysis** — Won't catch sophisticated malware or zero-days.
+Required:
 
-❌ **Only flags signals, not absolute verdicts** — "Safe" = no strong red flags. "Dangerous" = multiple reputable engines flagged serious threats.
+- `VIRUSTOTAL_API_KEY`
 
-❌ **Cannot detect novel malware** — If malware evades VirusTotal, this won't help. The URL checker is your strongest defense.
+Optional:
 
-❌ **Not a substitute for common sense** — Stick to trusted sources. No tool can save you from random forum downloads.
+- Supabase keys (only needed if you want persisted data like `scan_history`)
 
----
+## Install and Run
 
-## Screenshots
-
-### Landing Page
-![Landing Page](./screenshots/landing.png)
-
-### VirusTotal Result
-![VirusTotal Result](./screenshots/vt-result.png)
-
----
-
-## Privacy & Security
-
-**TLDR:** Most operations run in your browser. File uploads go to VirusTotal via a proxy. Nothing is stored. Code is open source.
-
-### What Runs Client-Side (In Your Browser)
-- ✅ **SHA-256 hashing** — Uses browser's native `crypto.subtle` API. File never leaves your device.
-- ✅ **Torrent parsing** — Parsed locally with `parse-torrent`. Nothing uploaded.
-- ✅ **URL checking** — Checks local database. No network request.
-
-### What Goes to the Server
-- 📤 **VirusTotal scans** — File sent to backend proxy → proxy forwards to VirusTotal → result returned. File not stored.
-- 🔍 **Hash lookups** — Hash (not file) sent to backend → proxy queries VirusTotal. Doesn't count against scan quota.
-
-### Why a Proxy?
-VirusTotal API key must stay secret. If it were in frontend code, anyone could steal it. Proxy hides the key. You can audit the code: `/server/src/index.ts`.
-
-### Data Retention
-**ZERO.** No files stored, no logs, no tracking, no analytics, no cookies (except HTTPS session).
-
----
-
-## Self-Hosting
-
-Don't trust the hosted version? Run your own.
-
-### Run Locally
+Install dependencies:
 
 ```bash
-# Clone and install
-git clone https://github.com/BrajamohanDas-afk/SafeCheck.git
-cd SafeCheck
-npm install
-
-# Set up backend
-cd server
 npm install
 ```
 
-Create `server/.env`:
-```
-PORT=3001
-VIRUSTOTAL_API_KEY=your_key_here
-```
-
-Get a free key at [virustotal.com/gui/join-us](https://www.virustotal.com/gui/join-us).
+Run in development:
 
 ```bash
-# Terminal 1: Start backend
-cd server
-npm run dev
-
-# Terminal 2: Start frontend
-cd ..
 npm run dev
 ```
 
-Frontend: `http://localhost:5173`  
-Backend: `http://localhost:3001`
+Open:
 
-### Deploy to Your Server
+- `http://localhost:3000`
 
-Options:
-- **Render.com** (free tier)
-- **Railway.app** (free tier)
-- **Fly.io** (free tier)
-- **Your own VPS** (DigitalOcean, Linode, etc.)
-
----
-
-## Getting Started
-
-**Quick Start (Frontend Only)** — hash verification and torrent parsing work without backend:
+Run production locally:
 
 ```bash
-git clone https://github.com/BrajamohanDas-afk/SafeCheck.git
-cd SafeCheck
-npm install
-npm run dev
+npm run build
+npm run start
 ```
 
-**Full Setup** — enable VirusTotal scans:
+## Supabase Schema (Optional)
 
-Follow [Self-Hosting](#self-hosting) steps above to run both frontend and backend.
+If you use Supabase, apply:
 
----
+- `supabase/schema.sql`
 
-## How the Verdict Works
+## Privacy and Data Flow
 
-SafeCheck uses **weighted scoring** — not all engines are equal, not all flags are equal.
+Client-side:
 
-### Engine Tiers
+- SHA-256 hashing
+- hash comparison
+- torrent/magnet parsing
 
-| Tier | Engines | Weight |
-|---|---|---|
-| **Gold** | Kaspersky, Bitdefender, Norton, Malwarebytes | 3 points |
-| **Silver** | Trend Micro, F-Secure, McAfee | 2 points |
-| **Bronze** | Obscure engines | 1 point |
+Next.js API routes:
 
-### Flag Types
+- VirusTotal hash lookup
+- VirusTotal file upload + polling final report
 
-| Type | Examples | Scoring |
-|---|---|---|
-| **Generic** | `HackTool`, `Crack`, `Keygen` | 0 points (expected) |
-| **Suspicious** | `Adware`, `PUP`, `Bundler` | 50% weight |
-| **Dangerous** | `Ransomware`, `Trojan.Stealer`, `Miner` | Full weight |
+SafeCheck does not store uploaded files.
 
-### Verdict Thresholds
+## Verdict Model
 
-| Score | Verdict | Meaning |
-|---|---|---|
-| 0–4 | ✅ Safe | Only generic crack flags |
-| 5–9 | ⚠️ Suspicious | Some concerning signals |
-| 10+ | 🚨 Dangerous | Multiple serious threats |
+Scoring model:
 
-**Example:**
-- Kaspersky: `HackTool` → 0 pts
-- Norton: `PUP.Bundler` → 1.5 pts (50% of 3)
-- Jiangmin: `Trojan.Generic` → 1 pt
+- Tier 1 engines: 3 points
+- Tier 2 engines: 2 points
+- Tier 3 engines: 1 point
 
-**Total: 2.5 pts → Safe**
+Classification:
 
-Every verdict shows an expandable "Why?" section with the full calculation.
+- Generic tool/packer detections: 0 points
+- Suspicious detections: 50% of tier weight
+- Dangerous detections: full tier weight
 
----
+Thresholds:
+
+- `0-4`: Safe
+- `5-9`: Suspicious
+- `10+`: Dangerous
 
 ## Tech Stack
 
-- React + TypeScript
-- Vite, Tailwind CSS, shadcn/ui
-- Web Crypto API (client-side hashing)
-- Express.js (backend proxy)
+- React
+- Next.js (App Router + Route Handlers)
+- TypeScript
+- Tailwind CSS + shadcn/ui
+- Supabase (optional)
 - VirusTotal API v3
-
----
-
-## Disclaimer
-
-SafeCheck cannot guarantee safety. It's a risk assessment tool. Always use common sense. Download from trusted sources only.
-
-**Limitations:** Won't catch zero-days, novel malware, or targeted attacks. Good at interpreting VirusTotal flags and verifying integrity.
-
----
-
-## Roadmap
-
-| Phase | Status |
-|---|---|
-| **MVP** | ✅ Live — URL checker, VT scan, hash verify, torrent parser |
-| **v1.1** | 🚧 In Progress — Missing file detector, community reporting, UI polish |
-| **v2.0** | 📅 Planned — Browser extension for real-time fake site warnings |
-| **v3.0** | 💡 Idea — Desktop app for process monitoring and miner detection |
-
----
-
-## Contributing
-
-Found a bug? [Open an issue](https://github.com/BrajamohanDas-afk/SafeCheck/issues)  
-Want to contribute? Fork → feature branch → pull request  
-Security issue? Email [your-email] (don't open public issue)
-
----
 
 ## License
 
-MIT License — Free to use, modify, distribute. See [LICENSE](LICENSE).
-
----
-
-### Built by [Brajamohan Das](https://github.com/BrajamohanDas-afk)
+MIT
