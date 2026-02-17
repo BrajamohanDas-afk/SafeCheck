@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     const result = await virusTotal.lookupFileByHash(hash);
 
     if (!result) {
-      return NextResponse.json({ error: "File not found in VirusTotal database" }, { status: 404 });
+      return NextResponse.json(null, { status: 200 });
     }
 
     return NextResponse.json(result, { status: 200 });

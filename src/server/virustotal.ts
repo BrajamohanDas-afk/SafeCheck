@@ -1,7 +1,20 @@
 const VT_BASE_URL = "https://www.virustotal.com/api/v3";
-const POLL_INTERVAL_MS = 3000;
-const MAX_POLL_TIME_MS = 60000;
 const MAX_FILE_SIZE = 32 * 1024 * 1024;
+
+function readPositiveIntEnv(name: string, fallback: number, minValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < minValue) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
+const POLL_INTERVAL_MS = readPositiveIntEnv("VIRUSTOTAL_POLL_INTERVAL_MS", 5000, 1000);
+const MAX_POLL_TIME_MS = readPositiveIntEnv("VIRUSTOTAL_MAX_POLL_TIME_MS", 300000, 5000);
 
 type JsonRecord = Record<string, unknown>;
 
@@ -33,6 +46,13 @@ export class VirusTotalServiceError extends Error {
     this.statusCode = statusCode;
     this.details = details;
   }
+}
+
+export type VirusTotalAnalysisState = "queued" | "in-progress" | "completed";
+
+export interface VirusTotalAnalysisStatus {
+  state: VirusTotalAnalysisState;
+  fileId?: string;
 }
 
 export class VirusTotalService {
@@ -146,11 +166,40 @@ export class VirusTotalService {
       await delay(POLL_INTERVAL_MS);
     }
 
-    throw new VirusTotalServiceError("VirusTotal scan timed out before completion", 504);
+    throw new VirusTotalServiceError(
+      `VirusTotal scan timed out before completion (${Math.round(MAX_POLL_TIME_MS / 1000)}s timeout)`,
+      504
+    );
   }
 
   private async getFileReport(fileId: string): Promise<unknown> {
     return this.request(`/files/${fileId}`);
+  }
+
+  async createFileAnalysis(file: File): Promise<string> {
+    return this.uploadFile(file);
+  }
+
+  async getAnalysisStatus(analysisId: string): Promise<VirusTotalAnalysisStatus> {
+    const analysisPayload = await this.getAnalysis(analysisId);
+    const status = getNestedString(analysisPayload, ["data", "attributes", "status"]);
+
+    if (status === "completed") {
+      return {
+        state: "completed",
+        fileId: this.extractFileIdFromAnalysis(analysisPayload),
+      };
+    }
+
+    if (status === "queued" || status === "in-progress") {
+      return { state: status };
+    }
+
+    return { state: "in-progress" };
+  }
+
+  async getFileReportById(fileId: string): Promise<unknown> {
+    return this.getFileReport(fileId);
   }
 
   async scanFileAndFetchReport(file: File): Promise<unknown> {
