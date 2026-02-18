@@ -1,3 +1,5 @@
+"use client";
+
 import { useMemo, useState, useCallback } from "react";
 import { motion } from "framer-motion";
 import {
@@ -10,6 +12,11 @@ import {
   X,
   FileArchive,
   Search,
+  Link2,
+  Flag,
+  ListChecks,
+  ShieldCheck,
+  ShieldAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -21,12 +28,21 @@ import { checkHashCache, uploadFileToScan } from "../virustotal/client";
 import { scoreVirusTotalResult } from "../verdict/scoring";
 import { compareKnownHash } from "../hash/compare";
 import { analyzeMagnetLink, analyzeTorrentFile } from "../torrent/analyzer";
+import { detectMissingFiles } from "../missing/detector";
+import {
+  checkSourceInput,
+  loadPendingSiteReports,
+  moderatePendingSiteReport,
+  submitSourceReport,
+} from "../source/client";
 import type {
   ScanStatus,
   Verdict,
   VerdictScoreBreakdown,
   VirusTotalFileResult,
   TorrentAnalysisResult,
+  SourceCheckResult,
+  SiteReportItem,
 } from "../types";
 
 const MAX_FILE_SIZE = 32 * 1024 * 1024; // 32MB
@@ -53,6 +69,22 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
   const [torrentResult, setTorrentResult] = useState<TorrentAnalysisResult | null>(null);
   const [torrentError, setTorrentError] = useState<string | null>(null);
   const [isParsingTorrent, setIsParsingTorrent] = useState(false);
+
+  const [sourceInput, setSourceInput] = useState("");
+  const [sourceResult, setSourceResult] = useState<SourceCheckResult | null>(null);
+  const [sourceError, setSourceError] = useState<string | null>(null);
+  const [isCheckingSource, setIsCheckingSource] = useState(false);
+  const [reportNotes, setReportNotes] = useState("");
+  const [reportMessage, setReportMessage] = useState<string | null>(null);
+  const [isSubmittingReport, setIsSubmittingReport] = useState(false);
+
+  const [moderationToken, setModerationToken] = useState("");
+  const [pendingReports, setPendingReports] = useState<SiteReportItem[]>([]);
+  const [isLoadingPendingReports, setIsLoadingPendingReports] = useState(false);
+  const [moderationMessage, setModerationMessage] = useState<string | null>(null);
+
+  const [expectedFilesInput, setExpectedFilesInput] = useState("");
+  const [actualFilesInput, setActualFilesInput] = useState("");
 
   const resetScanState = () => {
     setFile(null);
@@ -181,9 +213,107 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
     }
   };
 
+  const handleSourceCheck = useCallback(async () => {
+    setSourceError(null);
+    setReportMessage(null);
+    setSourceResult(null);
+
+    if (!sourceInput.trim()) {
+      setSourceError("Enter a URL or domain to check.");
+      return;
+    }
+
+    setIsCheckingSource(true);
+    try {
+      const checked = await checkSourceInput(sourceInput);
+      setSourceResult(checked);
+    } catch (error) {
+      setSourceError(error instanceof Error ? error.message : "Failed to check source.");
+    } finally {
+      setIsCheckingSource(false);
+    }
+  }, [sourceInput]);
+
+  const handleReportSite = useCallback(async () => {
+    setReportMessage(null);
+    setSourceError(null);
+
+    if (!sourceInput.trim()) {
+      setSourceError("Run a source check first, then report if needed.");
+      return;
+    }
+
+    setIsSubmittingReport(true);
+    try {
+      const submitted = await submitSourceReport(sourceInput, reportNotes, "ui-user");
+      setReportMessage(
+        submitted.autoFlaggedForReview
+          ? `Report submitted. Domain moved to pending review (${submitted.reportCountForDomain} reports).`
+          : `Report submitted. Current report count for ${submitted.domain}: ${submitted.reportCountForDomain}.`
+      );
+      setReportNotes("");
+    } catch (error) {
+      setSourceError(error instanceof Error ? error.message : "Failed to submit report.");
+    } finally {
+      setIsSubmittingReport(false);
+    }
+  }, [sourceInput, reportNotes]);
+
+  const handleLoadPendingReports = useCallback(async () => {
+    setModerationMessage(null);
+
+    if (!moderationToken.trim()) {
+      setModerationMessage("Enter moderation token first.");
+      return;
+    }
+
+    setIsLoadingPendingReports(true);
+    try {
+      const reports = await loadPendingSiteReports(moderationToken.trim());
+      setPendingReports(reports);
+      setModerationMessage(`Loaded ${reports.length} pending reports.`);
+    } catch (error) {
+      setModerationMessage(error instanceof Error ? error.message : "Failed to load pending reports.");
+    } finally {
+      setIsLoadingPendingReports(false);
+    }
+  }, [moderationToken]);
+
+  const handleModerateReport = useCallback(
+    async (reportId: string, decision: "approve" | "reject", sourceStatus?: "legitimate" | "fake" | "unknown") => {
+      setModerationMessage(null);
+
+      if (!moderationToken.trim()) {
+        setModerationMessage("Enter moderation token first.");
+        return;
+      }
+
+      try {
+        await moderatePendingSiteReport(moderationToken.trim(), {
+          reportId,
+          decision,
+          sourceStatus,
+          confidence: sourceStatus ? "high" : undefined,
+          reviewedBy: "ui-moderator",
+        });
+
+        setPendingReports((prev) => prev.filter((item) => item.id !== reportId));
+        setModerationMessage(`Report ${reportId} marked as ${decision}.`);
+      } catch (error) {
+        setModerationMessage(error instanceof Error ? error.message : "Failed to moderate report.");
+      }
+    },
+    [moderationToken]
+  );
+
   const hashComparison = useMemo(
     () => compareKnownHash(knownHashInput, fileHash),
     [knownHashInput, fileHash]
+  );
+
+  const missingDetection = useMemo(
+    () => detectMissingFiles(expectedFilesInput, actualFilesInput),
+    [expectedFilesInput, actualFilesInput]
   );
 
   if (!isOpen) return null;
@@ -226,6 +356,30 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
     mismatch: "text-dangerous",
   };
 
+  const sourceVerdictConfig = {
+    verified: {
+      icon: ShieldCheck,
+      color: "text-safe",
+      bg: "bg-safe/10",
+      border: "border-safe/30",
+      title: "Verified Source",
+    },
+    "known-fake": {
+      icon: ShieldAlert,
+      color: "text-dangerous",
+      bg: "bg-dangerous/10",
+      border: "border-dangerous/30",
+      title: "Known Fake Source",
+    },
+    unknown: {
+      icon: AlertTriangle,
+      color: "text-suspicious",
+      bg: "bg-suspicious/10",
+      border: "border-suspicious/30",
+      title: "Unknown Source",
+    },
+  };
+
   const analysisStats = result?.data?.attributes?.last_analysis_stats;
 
   return (
@@ -263,7 +417,11 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
         </div>
 
         <Tabs defaultValue="scan" className="space-y-4">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-2 md:grid-cols-4 gap-1 h-auto">
+            <TabsTrigger value="source" className="gap-2">
+              <Link2 className="w-4 h-4" />
+              Source URL
+            </TabsTrigger>
             <TabsTrigger value="scan" className="gap-2">
               <Search className="w-4 h-4" />
               File Scan + Hash
@@ -272,7 +430,144 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
               <FileArchive className="w-4 h-4" />
               Torrent Analyzer
             </TabsTrigger>
+            <TabsTrigger value="missing" className="gap-2">
+              <ListChecks className="w-4 h-4" />
+              Missing Files
+            </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="source" className="space-y-4">
+            <div className="rounded-xl border border-border p-4 bg-background/40 space-y-3">
+              <label className="text-sm font-medium">Check download source URL</label>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="https://example.com/download or example.com"
+                  value={sourceInput}
+                  onChange={(event) => setSourceInput(event.target.value)}
+                />
+                <Button onClick={() => void handleSourceCheck()} disabled={isCheckingSource}>
+                  {isCheckingSource ? "Checking..." : "Check Source"}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Statuses: Verified, Known Fake, or Unknown. Unknown means not in DB or low confidence.
+              </p>
+            </div>
+
+            {sourceError && (
+              <div className="rounded-xl border border-dangerous/30 bg-dangerous/10 p-4 text-sm text-dangerous">
+                {sourceError}
+              </div>
+            )}
+
+            {sourceResult && (
+              <div
+                className={`rounded-xl border p-4 ${sourceVerdictConfig[sourceResult.verdict].bg} ${sourceVerdictConfig[sourceResult.verdict].border}`}
+              >
+                <div className="flex items-start gap-3">
+                  {(() => {
+                    const Icon = sourceVerdictConfig[sourceResult.verdict].icon;
+                    return <Icon className={`w-5 h-5 mt-0.5 ${sourceVerdictConfig[sourceResult.verdict].color}`} />;
+                  })()}
+                  <div className="space-y-1">
+                    <p className={`font-semibold ${sourceVerdictConfig[sourceResult.verdict].color}`}>
+                      {sourceVerdictConfig[sourceResult.verdict].title}
+                    </p>
+                    <p className="text-sm text-muted-foreground">{sourceResult.note}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Domain: <span className="font-mono">{sourceResult.domain}</span>
+                      {sourceResult.matchedDomain ? ` | Matched: ${sourceResult.matchedDomain}` : ""}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Confidence: {sourceResult.confidence} | Reports: {sourceResult.reports}
+                      {sourceResult.stale ? " | Stale record" : ""}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-xl border border-border p-4 bg-background/40 space-y-3">
+              <label className="text-sm font-medium flex items-center gap-2">
+                <Flag className="w-4 h-4" />
+                Report this site for review
+              </label>
+              <Textarea
+                placeholder="Why should this source be reviewed?"
+                value={reportNotes}
+                onChange={(event) => setReportNotes(event.target.value)}
+              />
+              <div className="flex justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => void handleReportSite()}
+                  disabled={isSubmittingReport}
+                >
+                  {isSubmittingReport ? "Submitting..." : "Submit Report"}
+                </Button>
+              </div>
+              {reportMessage && <p className="text-xs text-safe">{reportMessage}</p>}
+            </div>
+
+            <details className="rounded-xl border border-border p-4 bg-background/40">
+              <summary className="cursor-pointer text-sm font-medium">
+                Moderation Panel (Admin Token Required)
+              </summary>
+              <div className="space-y-3 mt-3">
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Enter moderation token"
+                    value={moderationToken}
+                    onChange={(event) => setModerationToken(event.target.value)}
+                  />
+                  <Button
+                    variant="outline"
+                    onClick={() => void handleLoadPendingReports()}
+                    disabled={isLoadingPendingReports}
+                  >
+                    {isLoadingPendingReports ? "Loading..." : "Load Queue"}
+                  </Button>
+                </div>
+
+                {moderationMessage && (
+                  <p className="text-xs text-muted-foreground">{moderationMessage}</p>
+                )}
+
+                {pendingReports.length > 0 && (
+                  <div className="space-y-3">
+                    {pendingReports.map((report) => (
+                      <div key={report.id} className="rounded-lg border border-border p-3 space-y-2">
+                        <p className="text-xs font-mono">{report.domain}</p>
+                        <p className="text-xs text-muted-foreground">{report.notes}</p>
+                        <div className="flex gap-2 flex-wrap">
+                          <Button
+                            size="sm"
+                            onClick={() => void handleModerateReport(report.id, "approve", "fake")}
+                          >
+                            Approve as Fake
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void handleModerateReport(report.id, "approve", "legitimate")}
+                          >
+                            Approve as Legit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void handleModerateReport(report.id, "reject")}
+                          >
+                            Reject
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </details>
+          </TabsContent>
 
           <TabsContent value="scan" className="space-y-4">
             {status === "idle" && (
@@ -539,6 +834,88 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
                 )}
               </div>
             )}
+          </TabsContent>
+
+          <TabsContent value="missing" className="space-y-4">
+            <div className="rounded-xl border border-border p-4 bg-background/40 space-y-3">
+              <label className="text-sm font-medium">Expected file list</label>
+              <Textarea
+                className="font-mono text-xs min-h-28"
+                placeholder={"Paste one expected file path per line\nExample:\nbin/steam_api64.dll\nsetup.exe"}
+                value={expectedFilesInput}
+                onChange={(event) => setExpectedFilesInput(event.target.value)}
+              />
+            </div>
+
+            <div className="rounded-xl border border-border p-4 bg-background/40 space-y-3">
+              <label className="text-sm font-medium">Actual files present</label>
+              <Textarea
+                className="font-mono text-xs min-h-28"
+                placeholder={"Paste one actual file path per line\nExample:\nsetup.exe\nbin/game.exe"}
+                value={actualFilesInput}
+                onChange={(event) => setActualFilesInput(event.target.value)}
+              />
+            </div>
+
+            <div className="rounded-xl border border-border p-4 bg-background/40 space-y-3">
+              <p className="text-sm font-medium">Comparison summary</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+                <div className="p-3 rounded-lg bg-muted/50">
+                  <p className="text-xs text-muted-foreground">Expected</p>
+                  <p className="text-base font-semibold">{missingDetection.expectedCount}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-muted/50">
+                  <p className="text-xs text-muted-foreground">Actual</p>
+                  <p className="text-base font-semibold">{missingDetection.actualCount}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-muted/50">
+                  <p className="text-xs text-muted-foreground">Missing</p>
+                  <p className="text-base font-semibold text-dangerous">
+                    {missingDetection.missingFiles.length}
+                  </p>
+                </div>
+                <div className="p-3 rounded-lg bg-muted/50">
+                  <p className="text-xs text-muted-foreground">Likely Quarantined</p>
+                  <p className="text-base font-semibold text-suspicious">
+                    {missingDetection.likelyQuarantined.length}
+                  </p>
+                </div>
+              </div>
+
+              {missingDetection.missingFiles.length > 0 && (
+                <div className="rounded-lg border border-dangerous/30 bg-dangerous/10 p-3">
+                  <p className="text-xs font-medium text-dangerous">Missing files</p>
+                  <p className="text-xs mt-1 font-mono break-all">
+                    {missingDetection.missingFiles.slice(0, 12).join(", ")}
+                    {missingDetection.missingFiles.length > 12 ? " ..." : ""}
+                  </p>
+                </div>
+              )}
+
+              {missingDetection.likelyQuarantined.length > 0 && (
+                <div className="rounded-lg border border-suspicious/30 bg-suspicious/10 p-3">
+                  <p className="text-xs font-medium text-suspicious">
+                    Likely antivirus quarantine candidates
+                  </p>
+                  <p className="text-xs mt-1 font-mono break-all">
+                    {missingDetection.likelyQuarantined.join(", ")}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Check antivirus quarantine and restore only if hash/verdict checks are trusted.
+                  </p>
+                </div>
+              )}
+
+              {missingDetection.missingFiles.length === 0 &&
+                missingDetection.expectedCount > 0 &&
+                missingDetection.actualCount > 0 && (
+                  <div className="rounded-lg border border-safe/30 bg-safe/10 p-3">
+                    <p className="text-xs font-medium text-safe">
+                      No missing files detected from current lists.
+                    </p>
+                  </div>
+                )}
+            </div>
           </TabsContent>
         </Tabs>
       </motion.div>

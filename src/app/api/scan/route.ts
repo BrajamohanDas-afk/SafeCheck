@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { persistScanHistoryIfConfigured } from "@/server/scan-history";
+import { enqueueScanUpload, getScanQueueSnapshot, ScanUploadQueueError } from "@/server/scan-upload-queue";
 import { getVirusTotalService, VirusTotalServiceError } from "@/server/virustotal";
 
 export const runtime = "nodejs";
@@ -19,11 +20,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "File exceeds 32MB limit" }, { status: 400 });
     }
 
-    const virusTotal = getVirusTotalService();
-    const analysisId = await virusTotal.createFileAnalysis(file);
+    const queueBefore = getScanQueueSnapshot();
+    const analysisId = await enqueueScanUpload(async () => {
+      const virusTotal = getVirusTotalService();
+      return virusTotal.createFileAnalysis(file);
+    });
 
-    return NextResponse.json({ analysisId }, { status: 202 });
+    return NextResponse.json(
+      {
+        analysisId,
+        queue: queueBefore,
+      },
+      { status: 202 }
+    );
   } catch (error) {
+    if (error instanceof ScanUploadQueueError) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
+
     if (error instanceof VirusTotalServiceError) {
       return NextResponse.json({ error: error.message }, { status: error.statusCode });
     }

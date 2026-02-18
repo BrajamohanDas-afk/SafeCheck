@@ -88,3 +88,63 @@ export interface TorrentAnalysisResult {
   files: TorrentFileEntry[];
   anomalies: TorrentAnomaly[];
 }
+
+export type SourceStatus = "legitimate" | "fake" | "unknown";
+export type SourceConfidence = "high" | "medium" | "low";
+export type SourceVerdict = "verified" | "known-fake" | "unknown";
+
+export interface SourceCheckResult {
+  domain: string;
+  matchedDomain: string | null;
+  verdict: SourceVerdict;
+  status: SourceStatus;
+  confidence: SourceConfidence;
+  reports: number;
+  stale: boolean;
+  note: string;
+  backend: "supabase" | "seed";
+}
+
+export interface SiteReportResponse {
+  id: string;
+  domain: string;
+  status: string;
+  reportCountForDomain: number;
+  autoFlaggedForReview: boolean;
+}
+
+export interface SiteReportItem {
+  id: string;
+  domain: string;
+  notes: string;
+  status: string;
+  createdBy: string | null;
+  createdAt: string;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  reviewNotes: string | null;
+}
+
+export interface SiteReportModerationInput {
+  reportId: string;
+  decision: "approve" | "reject" | "needs_more_data";
+  sourceStatus?: SourceStatus;
+  confidence?: SourceConfidence;
+  reviewNotes?: string;
+  reviewedBy?: string;
+}
+
+export interface SiteReportModerationResult {
+  reportId: string;
+  domain: string;
+  status: string;
+  source?: SourceCheckResult;
+}
+
+export interface MissingFileDetectionResult {
+  expectedCount: number;
+  actualCount: number;
+  missingFiles: string[];
+  unexpectedFiles: string[];
+  likelyQuarantined: string[];
+}

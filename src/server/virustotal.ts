@@ -15,6 +15,12 @@ function readPositiveIntEnv(name: string, fallback: number, minValue: number): n
 
 const POLL_INTERVAL_MS = readPositiveIntEnv("VIRUSTOTAL_POLL_INTERVAL_MS", 5000, 1000);
 const MAX_POLL_TIME_MS = readPositiveIntEnv("VIRUSTOTAL_MAX_POLL_TIME_MS", 300000, 5000);
+const MAX_REQUESTS_PER_MINUTE = readPositiveIntEnv("VIRUSTOTAL_MAX_REQUESTS_PER_MINUTE", 4, 1);
+const MAX_SCANS_PER_DAY = readPositiveIntEnv("VIRUSTOTAL_MAX_SCANS_PER_DAY", 500, 1);
+
+const vtRequestTimestamps: number[] = [];
+let scanDayKey = new Date().toISOString().slice(0, 10);
+let scansUsedToday = 0;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -35,6 +41,52 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function cleanupOldRequests(now: number): void {
+  while (vtRequestTimestamps.length > 0 && now - vtRequestTimestamps[0] >= 60_000) {
+    vtRequestTimestamps.shift();
+  }
+}
+
+async function waitForRequestSlot(): Promise<void> {
+  while (true) {
+    const now = Date.now();
+    cleanupOldRequests(now);
+
+    if (vtRequestTimestamps.length < MAX_REQUESTS_PER_MINUTE) {
+      vtRequestTimestamps.push(now);
+      return;
+    }
+
+    const oldest = vtRequestTimestamps[0];
+    const waitMs = Math.max(250, 60_000 - (now - oldest));
+    await delay(waitMs);
+  }
+}
+
+function reserveDailyScanSlot(): () => void {
+  const nowDay = new Date().toISOString().slice(0, 10);
+  if (scanDayKey !== nowDay) {
+    scanDayKey = nowDay;
+    scansUsedToday = 0;
+  }
+
+  if (scansUsedToday >= MAX_SCANS_PER_DAY) {
+    throw new VirusTotalServiceError(
+      `VirusTotal daily scan limit reached (${MAX_SCANS_PER_DAY}/day). Try again tomorrow or use cached hashes.`,
+      429
+    );
+  }
+
+  scansUsedToday += 1;
+  let released = false;
+
+  return () => {
+    if (released) return;
+    scansUsedToday = Math.max(0, scansUsedToday - 1);
+    released = true;
+  };
 }
 
 export class VirusTotalServiceError extends Error {
@@ -81,6 +133,8 @@ export class VirusTotalService {
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
+    await waitForRequestSlot();
+
     const response = await fetch(`${VT_BASE_URL}${path}`, {
       ...init,
       headers: this.getHeaders(init.headers ?? {}),
@@ -112,16 +166,26 @@ export class VirusTotalService {
       throw new VirusTotalServiceError("File exceeds 32MB limit", 400);
     }
 
+    const releaseDailyScan = reserveDailyScanSlot();
+
     const formData = new FormData();
     formData.append("file", file, file.name);
 
-    const payload = await this.request("/files", {
-      method: "POST",
-      body: formData,
-    });
+    let payload: unknown;
+    try {
+      payload = await this.request("/files", {
+        method: "POST",
+        body: formData,
+      });
+    } catch (error) {
+      // If upload was rejected before a scan was accepted, release slot.
+      releaseDailyScan();
+      throw error;
+    }
 
     const analysisId = getNestedString(payload, ["data", "id"]);
     if (!analysisId) {
+      releaseDailyScan();
       throw new VirusTotalServiceError("VirusTotal did not return an analysis id", 502, payload);
     }
 

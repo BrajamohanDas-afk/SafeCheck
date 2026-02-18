@@ -3,7 +3,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Shield, Menu, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const Navbar = () => {
+interface NavbarProps {
+  onOpenFileChecker: () => void;
+}
+
+const Navbar = ({ onOpenFileChecker }: NavbarProps) => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -42,7 +46,7 @@ const Navbar = () => {
             <a href="#how-it-works" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               How it Works
             </a>
-            <Button size="sm">
+            <Button size="sm" onClick={onOpenFileChecker}>
               Check a File
             </Button>
           </nav>
@@ -86,7 +90,13 @@ const Navbar = () => {
               >
                 How it Works
               </a>
-              <Button className="w-full">
+              <Button
+                className="w-full"
+                onClick={() => {
+                  onOpenFileChecker();
+                  setIsMobileMenuOpen(false);
+                }}
+              >
                 Check a File
               </Button>
             </nav>

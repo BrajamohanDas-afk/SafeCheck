@@ -1,17 +1,22 @@
-import { useState } from "react";
 import { motion } from "framer-motion";
 import { Shield, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import FileChecker from "@/features/file-safety/ui/FileChecker";
 import heroBg from "@/assets/hero-bg.jpg";
 
-const Hero = () => {
-  const [isFileCheckerOpen, setIsFileCheckerOpen] = useState(false);
+interface HeroProps {
+  onOpenFileChecker: () => void;
+}
+
+const Hero = ({ onOpenFileChecker }: HeroProps) => {
+  const handleLearnHowItWorks = () => {
+    const section = document.getElementById("how-it-works");
+    if (!section) return;
+
+    section.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   return (
-    <>
-      <FileChecker isOpen={isFileCheckerOpen} onClose={() => setIsFileCheckerOpen(false)} />
-      <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
+    <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
       {/* Background image with overlay */}
       <div 
         className="absolute inset-0 z-0"
@@ -83,12 +88,17 @@ const Hero = () => {
             <Button 
               size="lg" 
               className="glow-primary text-lg px-8 py-6 font-semibold"
-              onClick={() => setIsFileCheckerOpen(true)}
+              onClick={onOpenFileChecker}
             >
               Check a File Now
               <ArrowRight className="w-5 h-5 ml-2" />
             </Button>
-            <Button variant="outline" size="lg" className="text-lg px-8 py-6">
+            <Button
+              variant="outline"
+              size="lg"
+              className="text-lg px-8 py-6"
+              onClick={handleLearnHowItWorks}
+            >
               Learn How It Works
             </Button>
           </motion.div>
@@ -142,7 +152,6 @@ const Hero = () => {
         </motion.div>
       </div>
     </section>
-    </>
   );
 };
 
