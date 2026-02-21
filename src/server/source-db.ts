@@ -1,4 +1,5 @@
 import { getSupabaseAdminClient } from "@/lib/supabase/server";
+import { checkGoogleSafeBrowsing, type SourceThreatIntelResult } from "@/server/source-threat-intel";
 
 export type SourceStatus = "legitimate" | "fake" | "unknown";
 export type SourceConfidence = "high" | "medium" | "low";
@@ -24,6 +25,9 @@ export interface SourceCheckResult {
   stale: boolean;
   note: string;
   backend: "supabase" | "seed";
+  categories: string[];
+  threatTypes: string[];
+  intelProvider: string | null;
 }
 
 export interface SiteReportResponse {
@@ -32,6 +36,8 @@ export interface SiteReportResponse {
   status: string;
   reportCountForDomain: number;
   autoFlaggedForReview: boolean;
+  automatedDecision: "auto_fake_threat_intel" | "auto_fake_consensus" | "needs_more_data";
+  moderationSummary: string;
 }
 
 export interface SiteReportModerationInput {
@@ -111,6 +117,16 @@ const seedSources = new Map<string, SourceRecord>(
 const seedReports: SiteReportItem[] = [];
 let seedReportCounter = 1;
 
+function isMissingTableError(errorMessage: string, tableName: string): boolean {
+  const lower = errorMessage.toLowerCase();
+  const normalizedTable = tableName.toLowerCase();
+  return (
+    (lower.includes("could not find the table") && lower.includes(normalizedTable)) ||
+    (lower.includes("schema cache") && lower.includes(normalizedTable)) ||
+    lower.includes(`relation "public.${normalizedTable}" does not exist`)
+  );
+}
+
 function normalizeDomain(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -122,6 +138,23 @@ function normalizeDomain(value: string): string | null {
     const host = parsed.hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
     if (!host || host.includes(" ")) return null;
     return host;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeLookupUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.toString();
   } catch {
     return null;
   }
@@ -163,7 +196,11 @@ function buildResult(
   record: SourceRecord | null,
   requestedDomain: string,
   matchedDomain: string | null,
-  backend: "supabase" | "seed"
+  backend: "supabase" | "seed",
+  noteOverride?: string,
+  categories: string[] = [],
+  threatTypes: string[] = [],
+  intelProvider: string | null = null
 ): SourceCheckResult {
   if (!record) {
     return {
@@ -176,6 +213,9 @@ function buildResult(
       stale: false,
       note: "This source is unknown. Proceed with caution and run file checks.",
       backend,
+      categories,
+      threatTypes,
+      intelProvider,
     };
   }
 
@@ -192,6 +232,10 @@ function buildResult(
     note = "This source entry is stale (not verified recently). Treat as unknown.";
   }
 
+  if (noteOverride) {
+    note = noteOverride;
+  }
+
   return {
     domain: requestedDomain,
     matchedDomain,
@@ -202,6 +246,36 @@ function buildResult(
     stale,
     note,
     backend,
+    categories,
+    threatTypes,
+    intelProvider,
+  };
+}
+
+function buildCategorySignals(
+  status: SourceStatus,
+  confidence: SourceConfidence,
+  sourceIntel: SourceThreatIntelResult | null
+): { categories: string[]; threatTypes: string[]; intelProvider: string | null } {
+  const categories: string[] = [];
+  const threatTypes = sourceIntel?.threatTypes ?? [];
+  const intelProvider = sourceIntel?.provider ?? null;
+
+  if (sourceIntel?.status === "match") {
+    categories.push("Threat Intelligence / Reputation Checks");
+  }
+
+  if (
+    sourceIntel?.status === "match" ||
+    (status === "fake" && (confidence === "high" || confidence === "medium"))
+  ) {
+    categories.push("Web Risk Assessment");
+  }
+
+  return {
+    categories,
+    threatTypes,
+    intelProvider,
   };
 }
 
@@ -230,16 +304,94 @@ function getSeedMatch(domain: string): { match: SourceRecord | null; matchedDoma
   return { match: null, matchedDomain: null };
 }
 
+function checkSourceWithSeedBackend(
+  domain: string,
+  sourceIntel: SourceThreatIntelResult | null
+): SourceCheckResult {
+  const now = new Date().toISOString();
+
+  if (sourceIntel?.status === "match") {
+    const existing = seedSources.get(domain);
+    const seeded: SourceRecord = {
+      domain,
+      status: "fake",
+      confidence: "high",
+      reports: existing?.reports ?? 0,
+      addedDate: existing?.addedDate ?? now,
+      lastVerifiedAt: now,
+      verifiedBy: sourceIntel.provider,
+    };
+
+    seedSources.set(domain, seeded);
+    const signals = buildCategorySignals(seeded.status, seeded.confidence, sourceIntel);
+    return buildResult(
+      seeded,
+      domain,
+      domain,
+      "seed",
+      sourceIntel.note,
+      signals.categories,
+      signals.threatTypes,
+      signals.intelProvider
+    );
+  }
+
+  const { match, matchedDomain } = getSeedMatch(domain);
+  if (match) {
+    const override = match.status === "unknown" ? sourceIntel?.note : undefined;
+    const signals = buildCategorySignals(match.status, match.confidence, sourceIntel);
+    return buildResult(
+      match,
+      domain,
+      matchedDomain,
+      "seed",
+      override,
+      signals.categories,
+      signals.threatTypes,
+      signals.intelProvider
+    );
+  }
+
+  const trackedUnknown: SourceRecord = {
+    domain,
+    status: "unknown",
+    confidence: "low",
+    reports: 0,
+    addedDate: now,
+    lastVerifiedAt: now,
+    verifiedBy: sourceIntel?.provider ?? "auto-check",
+  };
+
+  seedSources.set(domain, trackedUnknown);
+  const signals = buildCategorySignals(trackedUnknown.status, trackedUnknown.confidence, sourceIntel);
+  return buildResult(
+    trackedUnknown,
+    domain,
+    domain,
+    "seed",
+    sourceIntel?.note,
+    signals.categories,
+    signals.threatTypes,
+    signals.intelProvider
+  );
+}
+
 export async function checkSource(input: string): Promise<SourceCheckResult> {
   const domain = normalizeDomain(input);
   if (!domain) {
     throw new Error("Please enter a valid URL or domain.");
   }
 
+  const lookupUrl = normalizeLookupUrl(input);
+  if (!lookupUrl) {
+    throw new Error("Please enter a valid URL or domain.");
+  }
+
+  const sourceIntel = await checkGoogleSafeBrowsing(lookupUrl);
+
   const supabase = getSupabaseAdminClient();
   if (!supabase) {
-    const { match, matchedDomain } = getSeedMatch(domain);
-    return buildResult(match, domain, matchedDomain, "seed");
+    return checkSourceWithSeedBackend(domain, sourceIntel);
   }
 
   const candidates = getDomainCandidates(domain);
@@ -250,6 +402,9 @@ export async function checkSource(input: string): Promise<SourceCheckResult> {
     .limit(10);
 
   if (error) {
+    if (isMissingTableError(error.message, "site_sources")) {
+      return checkSourceWithSeedBackend(domain, sourceIntel);
+    }
     throw new Error(`Source DB check failed: ${error.message}`);
   }
 
@@ -257,12 +412,175 @@ export async function checkSource(input: string): Promise<SourceCheckResult> {
   const exactMatch = rows.find((row) => String(row.domain) === domain);
   const firstMatch = exactMatch ?? rows[0];
 
+  if (sourceIntel?.status === "match") {
+    const now = new Date().toISOString();
+    const existing = exactMatch ? mapSupabaseSourceRow(exactMatch) : null;
+    const reports = existing?.reports ?? 0;
+    const addedDate = existing?.addedDate ?? now;
+
+    const { error: upsertError } = await supabase.from("site_sources").upsert(
+      {
+        domain,
+        status: "fake",
+        confidence: "high",
+        reports,
+        verified_by: sourceIntel.provider,
+        added_date: addedDate,
+        last_verified_at: now,
+        updated_at: now,
+      },
+      { onConflict: "domain" }
+    );
+
+    if (upsertError) {
+      if (isMissingTableError(upsertError.message, "site_sources")) {
+        return checkSourceWithSeedBackend(domain, sourceIntel);
+      }
+      throw new Error(`Source DB check failed: ${upsertError.message}`);
+    }
+
+    const trackedRecord: SourceRecord = {
+      domain,
+      status: "fake",
+      confidence: "high",
+      reports,
+      addedDate,
+      lastVerifiedAt: now,
+      verifiedBy: sourceIntel.provider,
+    };
+
+    const signals = buildCategorySignals(trackedRecord.status, trackedRecord.confidence, sourceIntel);
+    return buildResult(
+      trackedRecord,
+      domain,
+      domain,
+      "supabase",
+      sourceIntel.note,
+      signals.categories,
+      signals.threatTypes,
+      signals.intelProvider
+    );
+  }
+
   if (!firstMatch) {
-    return buildResult(null, domain, null, "supabase");
+    const now = new Date().toISOString();
+    const trackedRecord: SourceRecord = {
+      domain,
+      status: "unknown",
+      confidence: "low",
+      reports: 0,
+      addedDate: now,
+      lastVerifiedAt: now,
+      verifiedBy: sourceIntel?.provider ?? "auto-check",
+    };
+
+    const { error: upsertError } = await supabase.from("site_sources").upsert(
+      {
+        domain,
+        status: "unknown",
+        confidence: "low",
+        reports: 0,
+        verified_by: sourceIntel?.provider ?? "auto-check",
+        added_date: now,
+        last_verified_at: now,
+        updated_at: now,
+      },
+      { onConflict: "domain", ignoreDuplicates: true }
+    );
+
+    if (upsertError) {
+      if (isMissingTableError(upsertError.message, "site_sources")) {
+        return checkSourceWithSeedBackend(domain, sourceIntel);
+      }
+
+      throw new Error(`Source DB check failed: ${upsertError.message}`);
+    }
+
+    const signals = buildCategorySignals(trackedRecord.status, trackedRecord.confidence, sourceIntel);
+    return buildResult(
+      trackedRecord,
+      domain,
+      domain,
+      "supabase",
+      sourceIntel?.note,
+      signals.categories,
+      signals.threatTypes,
+      signals.intelProvider
+    );
   }
 
   const record = mapSupabaseSourceRow(firstMatch);
-  return buildResult(record, domain, record.domain, "supabase");
+  const noteOverride = record.status === "unknown" ? sourceIntel?.note : undefined;
+  const signals = buildCategorySignals(record.status, record.confidence, sourceIntel);
+  return buildResult(
+    record,
+    domain,
+    record.domain,
+    "supabase",
+    noteOverride,
+    signals.categories,
+    signals.threatTypes,
+    signals.intelProvider
+  );
+}
+
+type AutomatedModerationDecision = "auto_fake_threat_intel" | "auto_fake_consensus" | "needs_more_data";
+
+interface AutomatedModerationPlan {
+  decision: AutomatedModerationDecision;
+  reportStatus: "approved" | "needs_more_data";
+  sourceStatus: SourceStatus;
+  confidence: SourceConfidence;
+  verifiedBy: string;
+  reviewNotes: string;
+}
+
+function buildAutomatedModerationPlan(
+  reportCountForDomain: number,
+  sourceIntel: SourceThreatIntelResult | null
+): AutomatedModerationPlan {
+  if (sourceIntel?.status === "match") {
+    return {
+      decision: "auto_fake_threat_intel",
+      reportStatus: "approved",
+      sourceStatus: "fake",
+      confidence: "high",
+      verifiedBy: sourceIntel.provider,
+      reviewNotes: `Auto-approved as fake via ${sourceIntel.provider} (${sourceIntel.threatTypes.join(", ")}).`,
+    };
+  }
+
+  if (reportCountForDomain >= AUTO_FLAG_THRESHOLD) {
+    return {
+      decision: "auto_fake_consensus",
+      reportStatus: "approved",
+      sourceStatus: "fake",
+      confidence: "medium",
+      verifiedBy: "auto-consensus",
+      reviewNotes: `Auto-approved as fake via community consensus threshold (${reportCountForDomain} reports).`,
+    };
+  }
+
+  return {
+    decision: "needs_more_data",
+    reportStatus: "needs_more_data",
+    sourceStatus: "unknown",
+    confidence: "low",
+    verifiedBy: sourceIntel?.provider ?? "auto-check",
+    reviewNotes: `Insufficient evidence. Waiting for more reports (current: ${reportCountForDomain}).`,
+  };
+}
+
+function buildAutomatedModerationSummary(plan: AutomatedModerationPlan): string {
+  if (plan.decision === "auto_fake_threat_intel") {
+    return "Auto-moderation marked this domain as fake using threat intelligence.";
+  }
+
+  if (plan.decision === "auto_fake_consensus") {
+    return "Auto-moderation marked this domain as fake using community consensus.";
+  }
+
+  return "Report accepted. Domain stays unknown until more evidence is collected.";
 }
 
 export async function submitSiteReport(
@@ -275,6 +593,11 @@ export async function submitSiteReport(
     throw new Error("Please enter a valid URL or domain before reporting.");
   }
 
+  const lookupUrl = normalizeLookupUrl(input);
+  if (!lookupUrl) {
+    throw new Error("Please enter a valid URL or domain before reporting.");
+  }
+
   const cleanNotes = notes.trim();
   if (!cleanNotes) {
     throw new Error("Please add a short reason for the report.");
@@ -284,50 +607,66 @@ export async function submitSiteReport(
     throw new Error("Report notes are too long. Keep it under 1000 characters.");
   }
 
+  let sourceIntel: SourceThreatIntelResult | null = null;
+  try {
+    sourceIntel = await checkGoogleSafeBrowsing(lookupUrl);
+  } catch (error) {
+    console.warn("Threat intel check failed during report submission:", error);
+  }
+
   const supabase = getSupabaseAdminClient();
   if (!supabase) {
+    const now = new Date().toISOString();
     const reportId = `seed-${seedReportCounter++}`;
-    const pendingForDomain = seedReports.filter(
-      (item) => item.domain === domain && (item.status === "pending" || item.status === "pending_review")
-    ).length;
-    const autoFlaggedForReview = pendingForDomain + 1 >= AUTO_FLAG_THRESHOLD;
+    const existingReportsForDomain = seedReports.filter((item) => item.domain === domain).length;
+    const reportCountForDomain = existingReportsForDomain + 1;
+    const plan = buildAutomatedModerationPlan(reportCountForDomain, sourceIntel);
 
     const report: SiteReportItem = {
       id: reportId,
       domain,
       notes: cleanNotes,
-      status: autoFlaggedForReview ? "pending_review" : "pending",
+      status: plan.reportStatus,
       createdBy,
-      createdAt: new Date().toISOString(),
-      reviewedBy: null,
-      reviewedAt: null,
-      reviewNotes: null,
+      createdAt: now,
+      reviewedBy: "auto-bot",
+      reviewedAt: now,
+      reviewNotes: plan.reviewNotes,
     };
 
     seedReports.push(report);
 
     const existing = seedSources.get(domain);
-    if (existing) {
-      existing.reports += 1;
-      seedSources.set(domain, existing);
-    } else {
-      seedSources.set(domain, {
-        domain,
-        status: "unknown",
-        confidence: "low",
-        reports: 1,
-        addedDate: new Date().toISOString(),
-        lastVerifiedAt: new Date().toISOString(),
-        verifiedBy: "community",
-      });
-    }
+    const nextReports = (existing?.reports ?? 0) + 1;
+    const nextStatus =
+      plan.sourceStatus === "fake" ? "fake" : ((existing?.status ?? "unknown") as SourceStatus);
+    const nextConfidence =
+      plan.sourceStatus === "fake" ? plan.confidence : ((existing?.confidence ?? "low") as SourceConfidence);
+    const verifiedBy =
+      plan.sourceStatus === "fake"
+        ? plan.verifiedBy
+        : sourceIntel?.provider ?? existing?.verifiedBy ?? "auto-check";
+
+    seedSources.set(domain, {
+      domain,
+      status: nextStatus,
+      confidence: nextConfidence,
+      reports: nextReports,
+      addedDate: existing?.addedDate ?? now,
+      lastVerifiedAt: now,
+      verifiedBy,
+    });
+
+    const moderationSummary = buildAutomatedModerationSummary(plan);
 
     return {
       id: reportId,
       domain,
       status: report.status,
-      reportCountForDomain: pendingForDomain + 1,
-      autoFlaggedForReview,
+      reportCountForDomain,
+      autoFlaggedForReview: plan.decision !== "needs_more_data",
+      automatedDecision: plan.decision,
+      moderationSummary,
     };
   }
 
@@ -340,6 +679,7 @@ export async function submitSiteReport(
       status: "pending",
       created_by: createdBy,
       created_at: now,
+      updated_at: now,
     })
     .select("id")
     .single();
@@ -348,60 +688,105 @@ export async function submitSiteReport(
     throw new Error(`Report submission failed: ${insertError?.message ?? "Unknown insert error"}`);
   }
 
-  const { data: pendingData, error: pendingError } = await supabase
+  const { data: reportCountRows, error: reportCountError } = await supabase
     .from("site_reports")
     .select("id")
-    .eq("domain", domain)
-    .in("status", ["pending", "pending_review"]);
+    .eq("domain", domain);
 
-  if (pendingError) {
-    throw new Error(`Failed to read report count: ${pendingError.message}`);
+  if (reportCountError) {
+    throw new Error(`Failed to read report count: ${reportCountError.message}`);
   }
 
-  const reportCountForDomain = pendingData?.length ?? 1;
-  const autoFlaggedForReview = reportCountForDomain >= AUTO_FLAG_THRESHOLD;
+  const reportCountForDomain = reportCountRows?.length ?? 1;
+  const plan = buildAutomatedModerationPlan(reportCountForDomain, sourceIntel);
+  const moderationSummary = buildAutomatedModerationSummary(plan);
 
-  if (autoFlaggedForReview) {
-    const { error: flagError } = await supabase
-      .from("site_reports")
-      .update({ status: "pending_review" })
-      .eq("domain", domain)
-      .in("status", ["pending", "pending_review"]);
+  const { error: reportUpdateError } = await supabase
+    .from("site_reports")
+    .update({
+      status: plan.reportStatus,
+      reviewed_by: "auto-bot",
+      reviewed_at: now,
+      review_notes: plan.reviewNotes,
+      updated_at: now,
+    })
+    .eq("id", inserted.id);
 
-    if (flagError) {
-      throw new Error(`Failed to auto-flag report queue: ${flagError.message}`);
-    }
+  if (reportUpdateError) {
+    throw new Error(`Failed to apply automated moderation: ${reportUpdateError.message}`);
   }
 
-  const { data: existingSource } = await supabase
+  const { data: existingSource, error: existingSourceError } = await supabase
     .from("site_sources")
-    .select("domain,reports")
+    .select("domain,status,confidence,reports,added_date,verified_by")
     .eq("domain", domain)
     .maybeSingle();
 
-  if (existingSource) {
-    await supabase
-      .from("site_sources")
-      .update({ reports: Number(existingSource.reports ?? 0) + 1 })
-      .eq("domain", domain);
+  if (existingSourceError) {
+    throw new Error(`Failed to load source record: ${existingSourceError.message}`);
+  }
+
+  if (plan.sourceStatus === "fake") {
+    const addedDate = toIso(
+      (existingSource as Record<string, unknown> | null)?.added_date as string | null | undefined,
+      now
+    );
+    const { error: sourceUpsertError } = await supabase.from("site_sources").upsert(
+      {
+        domain,
+        status: "fake",
+        confidence: plan.confidence,
+        reports: reportCountForDomain,
+        verified_by: plan.verifiedBy,
+        added_date: addedDate,
+        last_verified_at: now,
+        updated_at: now,
+      },
+      { onConflict: "domain" }
+    );
+
+    if (sourceUpsertError) {
+      throw new Error(`Failed to update source after auto-moderation: ${sourceUpsertError.message}`);
+    }
   } else {
-    await supabase.from("site_sources").insert({
-      domain,
-      status: "unknown",
-      confidence: "low",
-      reports: 1,
-      verified_by: "community",
-      added_date: now,
-      last_verified_at: now,
-    });
+    if (existingSource) {
+      const { error: sourceUpdateError } = await supabase
+        .from("site_sources")
+        .update({
+          reports: reportCountForDomain,
+          updated_at: now,
+        })
+        .eq("domain", domain);
+
+      if (sourceUpdateError) {
+        throw new Error(`Failed to update source report count: ${sourceUpdateError.message}`);
+      }
+    } else {
+      const { error: sourceInsertError } = await supabase.from("site_sources").insert({
+        domain,
+        status: "unknown",
+        confidence: "low",
+        reports: reportCountForDomain,
+        verified_by: sourceIntel?.provider ?? "auto-check",
+        added_date: now,
+        last_verified_at: now,
+        updated_at: now,
+      });
+
+      if (sourceInsertError) {
+        throw new Error(`Failed to create source record: ${sourceInsertError.message}`);
+      }
+    }
   }
 
   return {
     id: String(inserted.id),
     domain,
-    status: autoFlaggedForReview ? "pending_review" : "pending",
+    status: plan.reportStatus,
     reportCountForDomain,
-    autoFlaggedForReview,
+    autoFlaggedForReview: plan.decision !== "needs_more_data",
+    automatedDecision: plan.decision,
+    moderationSummary,
   };
 }
 

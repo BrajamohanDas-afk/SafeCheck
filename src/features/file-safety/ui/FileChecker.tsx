@@ -31,8 +31,6 @@ import { analyzeMagnetLink, analyzeTorrentFile } from "../torrent/analyzer";
 import { detectMissingFiles } from "../missing/detector";
 import {
   checkSourceInput,
-  loadPendingSiteReports,
-  moderatePendingSiteReport,
   submitSourceReport,
 } from "../source/client";
 import type {
@@ -42,7 +40,6 @@ import type {
   VirusTotalFileResult,
   TorrentAnalysisResult,
   SourceCheckResult,
-  SiteReportItem,
 } from "../types";
 
 const MAX_FILE_SIZE = 32 * 1024 * 1024; // 32MB
@@ -77,11 +74,6 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
   const [reportNotes, setReportNotes] = useState("");
   const [reportMessage, setReportMessage] = useState<string | null>(null);
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
-
-  const [moderationToken, setModerationToken] = useState("");
-  const [pendingReports, setPendingReports] = useState<SiteReportItem[]>([]);
-  const [isLoadingPendingReports, setIsLoadingPendingReports] = useState(false);
-  const [moderationMessage, setModerationMessage] = useState<string | null>(null);
 
   const [expectedFilesInput, setExpectedFilesInput] = useState("");
   const [actualFilesInput, setActualFilesInput] = useState("");
@@ -247,9 +239,7 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
     try {
       const submitted = await submitSourceReport(sourceInput, reportNotes, "ui-user");
       setReportMessage(
-        submitted.autoFlaggedForReview
-          ? `Report submitted. Domain moved to pending review (${submitted.reportCountForDomain} reports).`
-          : `Report submitted. Current report count for ${submitted.domain}: ${submitted.reportCountForDomain}.`
+        `${submitted.moderationSummary} (reports for ${submitted.domain}: ${submitted.reportCountForDomain})`
       );
       setReportNotes("");
     } catch (error) {
@@ -258,53 +248,6 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
       setIsSubmittingReport(false);
     }
   }, [sourceInput, reportNotes]);
-
-  const handleLoadPendingReports = useCallback(async () => {
-    setModerationMessage(null);
-
-    if (!moderationToken.trim()) {
-      setModerationMessage("Enter moderation token first.");
-      return;
-    }
-
-    setIsLoadingPendingReports(true);
-    try {
-      const reports = await loadPendingSiteReports(moderationToken.trim());
-      setPendingReports(reports);
-      setModerationMessage(`Loaded ${reports.length} pending reports.`);
-    } catch (error) {
-      setModerationMessage(error instanceof Error ? error.message : "Failed to load pending reports.");
-    } finally {
-      setIsLoadingPendingReports(false);
-    }
-  }, [moderationToken]);
-
-  const handleModerateReport = useCallback(
-    async (reportId: string, decision: "approve" | "reject", sourceStatus?: "legitimate" | "fake" | "unknown") => {
-      setModerationMessage(null);
-
-      if (!moderationToken.trim()) {
-        setModerationMessage("Enter moderation token first.");
-        return;
-      }
-
-      try {
-        await moderatePendingSiteReport(moderationToken.trim(), {
-          reportId,
-          decision,
-          sourceStatus,
-          confidence: sourceStatus ? "high" : undefined,
-          reviewedBy: "ui-moderator",
-        });
-
-        setPendingReports((prev) => prev.filter((item) => item.id !== reportId));
-        setModerationMessage(`Report ${reportId} marked as ${decision}.`);
-      } catch (error) {
-        setModerationMessage(error instanceof Error ? error.message : "Failed to moderate report.");
-      }
-    },
-    [moderationToken]
-  );
 
   const hashComparison = useMemo(
     () => compareKnownHash(knownHashInput, fileHash),
@@ -482,6 +425,17 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
                       Confidence: {sourceResult.confidence} | Reports: {sourceResult.reports}
                       {sourceResult.stale ? " | Stale record" : ""}
                     </p>
+                    {sourceResult.categories.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Risk categories: {sourceResult.categories.join(" | ")}
+                      </p>
+                    )}
+                    {sourceResult.threatTypes.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Threat intel: {sourceResult.intelProvider ?? "provider"} (
+                        {sourceResult.threatTypes.join(", ")})
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -509,64 +463,10 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
               {reportMessage && <p className="text-xs text-safe">{reportMessage}</p>}
             </div>
 
-            <details className="rounded-xl border border-border p-4 bg-background/40">
-              <summary className="cursor-pointer text-sm font-medium">
-                Moderation Panel (Admin Token Required)
-              </summary>
-              <div className="space-y-3 mt-3">
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Enter moderation token"
-                    value={moderationToken}
-                    onChange={(event) => setModerationToken(event.target.value)}
-                  />
-                  <Button
-                    variant="outline"
-                    onClick={() => void handleLoadPendingReports()}
-                    disabled={isLoadingPendingReports}
-                  >
-                    {isLoadingPendingReports ? "Loading..." : "Load Queue"}
-                  </Button>
-                </div>
-
-                {moderationMessage && (
-                  <p className="text-xs text-muted-foreground">{moderationMessage}</p>
-                )}
-
-                {pendingReports.length > 0 && (
-                  <div className="space-y-3">
-                    {pendingReports.map((report) => (
-                      <div key={report.id} className="rounded-lg border border-border p-3 space-y-2">
-                        <p className="text-xs font-mono">{report.domain}</p>
-                        <p className="text-xs text-muted-foreground">{report.notes}</p>
-                        <div className="flex gap-2 flex-wrap">
-                          <Button
-                            size="sm"
-                            onClick={() => void handleModerateReport(report.id, "approve", "fake")}
-                          >
-                            Approve as Fake
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => void handleModerateReport(report.id, "approve", "legitimate")}
-                          >
-                            Approve as Legit
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => void handleModerateReport(report.id, "reject")}
-                          >
-                            Reject
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </details>
+            <div className="rounded-xl border border-border p-4 bg-background/40 text-xs text-muted-foreground">
+              Auto-moderation is enabled. Reports are processed automatically using threat-intel
+              signals and consensus thresholds.
+            </div>
           </TabsContent>
 
           <TabsContent value="scan" className="space-y-4">

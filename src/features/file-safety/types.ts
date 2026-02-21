@@ -103,6 +103,9 @@ export interface SourceCheckResult {
   stale: boolean;
   note: string;
   backend: "supabase" | "seed";
+  categories: string[];
+  threatTypes: string[];
+  intelProvider: string | null;
 }
 
 export interface SiteReportResponse {
@@ -111,6 +114,8 @@ export interface SiteReportResponse {
   status: string;
   reportCountForDomain: number;
   autoFlaggedForReview: boolean;
+  automatedDecision: "auto_fake_threat_intel" | "auto_fake_consensus" | "needs_more_data";
+  moderationSummary: string;
 }
 
 export interface SiteReportItem {

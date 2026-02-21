@@ -3,6 +3,13 @@ import { Shield, ArrowRight, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const CTA = () => {
+  const handleStartScanningFree = () => {
+    const heroSection = document.getElementById("hero-section");
+    if (!heroSection) return;
+
+    heroSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return (
     <section className="py-24 relative overflow-hidden">
       {/* Background glow */}
@@ -30,7 +37,11 @@ const CTA = () => {
               Just drag, drop, and know if it's safe.
             </p>
 
-            <Button size="lg" className="glow-primary text-lg px-10 py-6 font-semibold">
+            <Button
+              size="lg"
+              className="glow-primary text-lg px-10 py-6 font-semibold"
+              onClick={handleStartScanningFree}
+            >
               Start Scanning Free
               <ArrowRight className="w-5 h-5 ml-2" />
             </Button>

@@ -16,7 +16,7 @@ const Hero = ({ onOpenFileChecker }: HeroProps) => {
   };
 
   return (
-    <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
+    <section id="hero-section" className="relative min-h-screen flex items-center justify-center overflow-hidden">
       {/* Background image with overlay */}
       <div 
         className="absolute inset-0 z-0"

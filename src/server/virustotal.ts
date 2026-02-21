@@ -37,6 +37,18 @@ function getNestedString(value: unknown, path: string[]): string | null {
   return typeof current === "string" ? current : null;
 }
 
+function getErrorCode(error: unknown): string | null {
+  if (isRecord(error) && typeof error.code === "string") {
+    return error.code;
+  }
+
+  if (isRecord(error) && isRecord(error.cause) && typeof error.cause.code === "string") {
+    return error.cause.code;
+  }
+
+  return null;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -135,11 +147,24 @@ export class VirusTotalService {
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
     await waitForRequestSlot();
 
-    const response = await fetch(`${VT_BASE_URL}${path}`, {
-      ...init,
-      headers: this.getHeaders(init.headers ?? {}),
-      cache: "no-store",
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${VT_BASE_URL}${path}`, {
+        ...init,
+        headers: this.getHeaders(init.headers ?? {}),
+        cache: "no-store",
+      });
+    } catch (error) {
+      const code = getErrorCode(error);
+      const message =
+        code === "UND_ERR_CONNECT_TIMEOUT"
+          ? "VirusTotal is unreachable (connect timeout). Check VPN/firewall/proxy and retry."
+          : "Failed to reach VirusTotal. Check internet/VPN/firewall/proxy and retry.";
+      throw new VirusTotalServiceError(message, 503, {
+        code,
+        path,
+      });
+    }
 
     const payload = await this.parseJson(response);
     if (!response.ok) {
