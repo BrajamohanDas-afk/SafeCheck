@@ -1,181 +1,165 @@
 # SafeCheck
 
-Verify downloaded files before you run them.
+SafeCheck is a web app to verify downloaded files and source URLs before you run anything locally.
 
-SafeCheck is a file integrity and security scanner for executables from untrusted sources. It combines VirusTotal analysis, local SHA-256 verification, and torrent metadata inspection in one app.
+It combines source reputation checks, VirusTotal scanning, SHA-256 hash verification, torrent metadata analysis, smart risk scoring, and multilingual UI in one flow.
 
-![SafeCheck Banner](./SafeCheck.png)
+## Screenshots
 
----
+### Landing Page
 
-## Architecture (Important)
+![SafeCheck Landing](./screenshots/landing.png)
 
-- Single Next.js app for both UI and API.
-- No separate Express backend.
-- No separate `server/` folder/service required.
-- API logic runs in Next.js route handlers (`src/app/api/*`) on Node.js runtime.
+### File Safety Toolkit - Source URL
 
----
+![SafeCheck Toolkit Source URL](./screenshots/toolkit-source-url.png)
 
-## Core Features
+### File Safety Toolkit - File Scan + Hash
 
-- Source URL checker (`Verified` / `Known Fake` / `Unknown`).
-- Community site reporting + moderation queue.
-- VirusTotal scan with hash-cache-first flow.
-- Weighted verdict engine (`Safe`, `Suspicious`, `Dangerous`) with explanation.
-- Local SHA-256 hash generation and hash compare.
-- Torrent and magnet metadata analyzer with advisory anomaly flags.
-- Missing-file detector to spot likely antivirus quarantine cases.
+![SafeCheck Toolkit File Scan](./screenshots/toolkit-file-scan-hash.png)
 
----
+### File Safety Toolkit - Torrent Analyzer
 
-## Why Not Just VirusTotal?
+![SafeCheck Toolkit Torrent Analyzer](./screenshots/toolkit-torrent-analyzer.png)
 
-VirusTotal is the scanning engine. SafeCheck adds decision and workflow on top:
+### File Safety Toolkit - Smart Score
 
-- Source trust verdicts before file execution (`Verified` / `Known Fake` / `Unknown`).
-- Community-driven source reporting and moderation pipeline.
-- Weighted verdict logic with user-facing explanation (`Why this verdict?`).
-- Hash compare + missing-file/quarantine checks in the same flow.
-- Queue and rate-limit controls for stable VT API usage.
-- Single guided UX for non-technical users instead of raw engine output.
+![SafeCheck Toolkit Smart Score](./screenshots/toolkit-smart-score.png)
 
----
+## Demo Video
 
-## Legitimate Use Cases
+- Google Drive: [Demo Video](https://drive.google.com/file/d/1snkXyUKoVNvGKAMMPZEBx69Cq7eoUE5X/view?usp=sharing)
 
-1. Verifying open-source installers from mirror links.
-2. Corporate IT security training demos.
-3. Academic antivirus false-positive research.
-4. Checking cloud backup file integrity after download.
-5. Validating legal torrents (Linux ISOs, public domain media).
+## Features
 
----
+- Source URL checker (`Verified`, `Known Fake`, `Unknown`)
+- Community site reporting with auto-moderation workflow
+- VirusTotal scan with hash-cache-first flow
+- Weighted verdict engine (`Safe`, `Suspicious`, `Dangerous`) with explanations
+- Local SHA-256 hash generation and known-hash comparison
+- Torrent and magnet metadata analyzer with anomaly advisories
+- Smart Download Reputation Score (`0-100`) with reasons
+- Multilingual UI (Lingo.dev integration)
 
-## Environment Setup
+## Why SafeCheck (vs only VirusTotal)
 
-Create `.env.local` at the project root (same level as `package.json`):
+VirusTotal is the malware intelligence engine. SafeCheck adds product logic and UX:
+
+- Source trust checks before download/run
+- Community reports and moderation queue
+- Single final verdict with transparent reasoning
+- Hash verification and URL risk scoring in same tool
+- Better workflow for non-technical users
+
+## Architecture
+
+- Single Next.js app (UI + API routes)
+- No separate Express backend required
+- Route handlers in `src/app/api/*`
+- Optional Supabase persistence for source/report history
+
+## Tech Stack
+
+- Next.js (App Router + Route Handlers)
+- React + TypeScript
+- Tailwind CSS + shadcn/ui
+- Supabase (database)
+- VirusTotal API v3
+- Google Safe Browsing API
+- Lingo.dev (i18n)
+
+## Environment Variables
+
+Create `.env.local` in project root:
 
 ```env
-VIRUSTOTAL_API_KEY=your_virustotal_api_key
-SITE_MODERATION_TOKEN=your_admin_token_for_review_actions
+# Core scanning
+VIRUSTOTAL_API_KEY=...
+GOOGLE_SAFE_BROWSING_API_KEY=...
 
-# Optional VT ops controls (defaults shown)
-VIRUSTOTAL_MAX_REQUESTS_PER_MINUTE=4
-VIRUSTOTAL_MAX_SCANS_PER_DAY=500
-VIRUSTOTAL_POLL_INTERVAL_MS=5000
-VIRUSTOTAL_MAX_POLL_TIME_MS=300000
-SCAN_QUEUE_MAX_CONCURRENT=1
-SCAN_QUEUE_MAX_PENDING=25
+# Moderation
+SITE_MODERATION_TOKEN=your_long_random_secret
 
-# Optional Supabase (for persistence)
-NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_public_anon_key
-SUPABASE_URL=https://your-project-id.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+# Supabase
+SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=...
+NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+
+# Lingo.dev
+LINGODOTDEV_API_KEY=...
+LINGO_USE_PSEUDO_TRANSLATOR=false
+LINGO_BUILD_MODE=cache-only
 ```
 
-**Required:**
-- `VIRUSTOTAL_API_KEY`
-- `SITE_MODERATION_TOKEN` (required if you will use moderation API from UI)
+Notes:
 
-**Optional:**
-- Supabase keys (only needed if you want persisted data like `scan_history`)
+- Keep real secrets only in `.env.local` (never commit).
+- Commit only `.env.example` with placeholder values.
 
----
+## Supabase Setup
 
-## Install and Run
+1. Open Supabase SQL Editor.
+2. Run `supabase/schema.sql`.
+3. (Optional) Seed some rows in `public.site_sources` for demo.
 
-Install dependencies:
+Tables used:
+
+- `scan_history`
+- `site_sources`
+- `site_reports`
+
+## Local Development
+
+Install:
 
 ```bash
 npm install
 ```
 
-Run in development:
+Run dev:
 
 ```bash
 npm run dev
 ```
 
-Open: `http://localhost:3000`
+Open:
 
-Run production locally:
+`http://localhost:3000`
+
+## Production Build (local)
 
 ```bash
 npm run build
 npm run start
 ```
 
----
+## Deploy (Vercel)
 
-## Supabase Schema (Optional)
+1. Push repo to GitHub.
+2. Import project in Vercel.
+3. Add all env vars from `.env.local` to Vercel Project Settings.
+4. Deploy.
 
-If you use Supabase, apply the schema from `supabase/schema.sql`
+If install fails due to peer dependencies, this repo already includes `.npmrc` with:
 
-This now includes:
-- `scan_history` for verdict persistence
-- `site_sources` for URL checker trust records (status/confidence/timestamps)
-- `site_reports` for community report queue + moderation fields
+`legacy-peer-deps=true`
 
-## Why Supabase Helps (Hackathon)
+## Security Notes
 
-- Gives you real persistence for source trust data and report queue.
-- Enables moderation workflow (`pending` -> `approved/rejected`) without building your own DB backend.
-- Makes your demo credible with timestamped history and confidence fields.
-- Keeps implementation fast: SQL + hosted Postgres + simple client/server SDK.
+- Uploaded files are scanned via API flow; do not commit secrets.
+- Rotate keys immediately if any key was exposed in screenshots/logs.
+- Service role keys must remain server-only.
 
----
+## Roadmap
 
-## Privacy and Data Flow
-
-**Client-side:**
-- SHA-256 hashing
-- Hash comparison
-- Torrent/magnet parsing
-
-**Next.js API routes:**
-- VirusTotal hash lookup
-- VirusTotal file upload + polling final report
-
-SafeCheck does not store uploaded files.
-
----
-
-## Verdict Model
-
-**Scoring model:**
-- Tier 1 engines: 3 points
-- Tier 2 engines: 2 points
-- Tier 3 engines: 1 point
-
-**Classification:**
-- Generic tool/packer detections: 0 points
-- Suspicious detections: 50% of tier weight
-- Dangerous detections: full tier weight
-
-**Thresholds:**
-- `0–4`: Safe
-- `5–9`: Suspicious
-- `10+`: Dangerous
-
----
-
-## Tech Stack
-
-- React
-- Next.js (App Router + Route Handlers)
-- TypeScript
-- Tailwind CSS + shadcn/ui
-- Supabase (optional)
-- VirusTotal API v3
-
----
+- Better queue/rate-limit observability
+- More threat-intel providers
+- Admin moderation dashboard improvements
+- Exportable scan reports
 
 ## License
 
-MIT License — See [LICENSE](LICENSE) for details.
-
----
+MIT. See `LICENSE`.
 
 Built by [Brajamohan Das](https://github.com/BrajamohanDas-afk)
