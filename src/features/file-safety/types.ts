@@ -153,3 +153,37 @@ export interface MissingFileDetectionResult {
   unexpectedFiles: string[];
   likelyQuarantined: string[];
 }
+
+export type ReputationLevel = "low" | "medium" | "high";
+
+export interface ReputationReason {
+  id: string;
+  label: string;
+  points: number;
+  detail: string;
+}
+
+export interface SmartDownloadReputationResult {
+  inputUrl: string;
+  normalizedUrl: string;
+  domain: string;
+  score: number;
+  level: ReputationLevel;
+  reasons: ReputationReason[];
+  signals: {
+    sourceVerdict: SourceVerdict;
+    sourceConfidence: SourceConfidence;
+    reports: number;
+    threatTypes: string[];
+    intelProvider: string | null;
+    tlsStatus: "https" | "http" | "downgraded" | "unknown";
+    redirectDepth: number;
+    finalUrl: string;
+    mimeType: string | null;
+    mimeMismatch: boolean;
+    filename: string | null;
+    domainAgeStatus: "not-available";
+    popularityStatus: "not-available";
+    metadataFetchStatus: "ok" | "error";
+  };
+}

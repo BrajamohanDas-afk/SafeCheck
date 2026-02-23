@@ -1,7 +1,11 @@
+"use i18n";
+
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Shield, Menu, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useLingoContext } from "@lingo.dev/compiler/react";
+import type { LocaleCode } from "lingo.dev/spec";
 
 interface NavbarProps {
   onOpenFileChecker: () => void;
@@ -10,6 +14,17 @@ interface NavbarProps {
 const Navbar = ({ onOpenFileChecker }: NavbarProps) => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const { locale, setLocale } = useLingoContext();
+
+  const localeOptions: Array<{ code: LocaleCode; label: string }> = [
+    { code: "en", label: "EN" },
+    { code: "fr", label: "FR" },
+    { code: "es", label: "ES" },
+  ];
+
+  const handleLocaleChange = (nextLocale: LocaleCode) => {
+    void setLocale(nextLocale);
+  };
 
   useEffect(() => {
     const handleScroll = () => {
@@ -46,6 +61,18 @@ const Navbar = ({ onOpenFileChecker }: NavbarProps) => {
             <a href="#how-it-works" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               How it Works
             </a>
+            <select
+              aria-label="Language"
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+              value={locale}
+              onChange={(event) => handleLocaleChange(event.target.value as LocaleCode)}
+            >
+              {localeOptions.map((option) => (
+                <option key={option.code} value={option.code}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
             <Button size="sm" onClick={onOpenFileChecker}>
               Check a File
             </Button>
@@ -90,6 +117,18 @@ const Navbar = ({ onOpenFileChecker }: NavbarProps) => {
               >
                 How it Works
               </a>
+              <select
+                aria-label="Language"
+                className="h-10 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                value={locale}
+                onChange={(event) => handleLocaleChange(event.target.value as LocaleCode)}
+              >
+                {localeOptions.map((option) => (
+                  <option key={option.code} value={option.code}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
               <Button
                 className="w-full"
                 onClick={() => {

@@ -14,7 +14,7 @@ import {
   Search,
   Link2,
   Flag,
-  ListChecks,
+  Gauge,
   ShieldCheck,
   ShieldAlert,
 } from "lucide-react";
@@ -23,12 +23,13 @@ import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useLingoContext } from "@lingo.dev/compiler/react";
 import { computeSHA256, formatFileSize } from "../crypto/sha256";
 import { checkHashCache, uploadFileToScan } from "../virustotal/client";
 import { scoreVirusTotalResult } from "../verdict/scoring";
 import { compareKnownHash } from "../hash/compare";
 import { analyzeMagnetLink, analyzeTorrentFile } from "../torrent/analyzer";
-import { detectMissingFiles } from "../missing/detector";
+import { scoreDownloadReputation } from "../reputation/client";
 import {
   checkSourceInput,
   submitSourceReport,
@@ -40,10 +41,304 @@ import type {
   VirusTotalFileResult,
   TorrentAnalysisResult,
   SourceCheckResult,
+  SmartDownloadReputationResult,
 } from "../types";
 
 const MAX_FILE_SIZE = 32 * 1024 * 1024; // 32MB
 const MAX_TORRENT_PREVIEW_FILES = 25;
+
+const FILE_CHECKER_TEXT = {
+  en: {
+    close: "Close",
+    toolkitBadge: "File Safety Toolkit",
+    toolkitTitle: "Scan + Hash + Reputation Checks",
+    toolkitSubtitle: "Use multiple checks together for better judgment, not blind trust.",
+    tabSource: "Source URL",
+    tabScan: "File Scan + Hash",
+    tabTorrent: "Torrent Analyzer",
+    tabScore: "Smart Score",
+    sourceLabel: "Check download source URL",
+    sourcePlaceholder: "https://example.com/download or example.com",
+    checkSource: "Check Source",
+    checking: "Checking...",
+    sourceHelp: "Statuses: Verified, Known Fake, or Unknown. Unknown means not in DB or low confidence.",
+    reportLabel: "Report this site for review",
+    reportPlaceholder: "Why should this source be reviewed?",
+    submitReport: "Submit Report",
+    submitting: "Submitting...",
+    autoModeration:
+      "Auto-moderation is enabled. Reports are processed automatically using threat-intel signals and consensus thresholds.",
+    dropFile: "Drag and drop file to scan",
+    dropFileActive: "Drop your file here",
+    browseHelp: "or click to browse (max 32MB)",
+    hashing: "Computing file hash...",
+    checkingCache: "Checking VirusTotal hash cache...",
+    uploading: "Uploading and waiting for final VirusTotal report...",
+    scanFailed: "Scan failed",
+    tryAgain: "Try Again",
+    safeTitle: "Safe",
+    safeDescription: "Only expected/generic detections were found.",
+    safeAction: "Proceed carefully and verify file integrity before running.",
+    suspiciousTitle: "Suspicious",
+    suspiciousDescription: "Suspicious engine signals were found.",
+    suspiciousAction: "Do not run yet. Re-check the file hash and run deeper scans.",
+    dangerousTitle: "Dangerous",
+    dangerousDescription: "Multiple dangerous signals were detected.",
+    dangerousAction: "Delete the file and do not execute it.",
+    malicious: "Malicious",
+    suspicious: "Suspicious",
+    undetected: "Undetected",
+    harmless: "Harmless",
+    whyVerdict: "Why this verdict?",
+    weightedScore: "Weighted score",
+    noContributors: "No suspicious/dangerous contributors above zero points.",
+    ignoredGeneric: "Ignored as generic:",
+    disclaimer:
+      "SafeCheck cannot guarantee a file is safe. This is risk assessment based on available signals.",
+    knownHashLabel: "Known-good SHA-256 hash compare",
+    knownHashPlaceholder: "Paste expected SHA-256 hash from source page",
+    resetScan: "Reset Scan State",
+    torrentFileLabel: "Analyze .torrent file",
+    torrentHelp: "Parsed client-side only. Torrent anomalies are advisory, not proof of malware.",
+    magnetLabel: "Analyze magnet link",
+    magnetPlaceholder: "magnet:?xt=urn:btih:...",
+    analyzeMagnet: "Analyze Magnet",
+    parsingTorrent: "Parsing torrent metadata...",
+    sourceType: "Source Type",
+    trackers: "Trackers",
+    files: "Files",
+    totalSize: "Total Size",
+    name: "Name",
+    infoHash: "Info hash:",
+    anomalyAdvisories: "Anomaly advisories",
+    noAnomalies: "No anomaly rules triggered from current metadata.",
+    fileListPreview: "File list preview",
+    path: "Path",
+    size: "Size",
+    scoreLabel: "Smart download reputation score",
+    scorePlaceholder: "https://example.com/download/file.zip",
+    scoreUrl: "Score URL",
+    scoring: "Scoring...",
+    scoreHelp: "Score combines source reputation, threat intel, TLS/redirect behavior, and metadata anomalies.",
+    lowRisk: "Low Risk",
+    mediumRisk: "Medium Risk",
+    highRisk: "High Risk",
+    topReasons: "Top risk reasons",
+    noHighRisk: "No high-risk signals were triggered from available checks.",
+    signalSummary: "Signal summary",
+    riskScoreSuffix: "/100 risk score",
+    sourceVerdict: "Source verdict:",
+    sourceConfidence: "Source confidence:",
+    threatTypes: "Threat types:",
+    tlsStatus: "TLS status:",
+    redirectDepth: "Redirect depth:",
+    mimeMismatch: "MIME mismatch:",
+    domainAge: "Domain age:",
+    popularity: "Popularity:",
+    yes: "yes",
+    no: "no",
+    none: "none",
+    verifiedSource: "Verified Source",
+    knownFakeSource: "Known Fake Source",
+    unknownSource: "Unknown Source",
+    enterUrlErr: "Enter a URL or domain to check.",
+    reportFirstErr: "Run a source check first, then report if needed.",
+    enterDownloadErr: "Enter a download URL to score.",
+  },
+  fr: {
+    close: "Fermer",
+    toolkitBadge: "Outils de securite fichier",
+    toolkitTitle: "Scan + Hash + Verification de reputation",
+    toolkitSubtitle: "Combinez plusieurs verifications pour mieux juger, sans confiance aveugle.",
+    tabSource: "URL source",
+    tabScan: "Scan + Hash fichier",
+    tabTorrent: "Analyseur Torrent",
+    tabScore: "Score intelligent",
+    sourceLabel: "Verifier l'URL de telechargement",
+    sourcePlaceholder: "https://example.com/download ou example.com",
+    checkSource: "Verifier la source",
+    checking: "Verification...",
+    sourceHelp: "Statuts: Verifiee, Fausse connue ou Inconnue. Inconnue = absente de la DB ou faible confiance.",
+    reportLabel: "Signaler ce site pour revision",
+    reportPlaceholder: "Pourquoi cette source doit etre revisee ?",
+    submitReport: "Envoyer le signalement",
+    submitting: "Envoi...",
+    autoModeration:
+      "La moderation auto est activee. Les signalements sont traites automatiquement via signaux threat-intel et consensus.",
+    dropFile: "Glissez-deposez un fichier a scanner",
+    dropFileActive: "Deposez votre fichier ici",
+    browseHelp: "ou cliquez pour parcourir (max 32MB)",
+    hashing: "Calcul du hash fichier...",
+    checkingCache: "Verification du cache hash VirusTotal...",
+    uploading: "Televersement et attente du rapport final VirusTotal...",
+    scanFailed: "Echec du scan",
+    tryAgain: "Reessayer",
+    safeTitle: "Sain",
+    safeDescription: "Seules des detections attendues/generiques ont ete trouvees.",
+    safeAction: "Continuez prudemment et verifiez l'integrite avant execution.",
+    suspiciousTitle: "Suspect",
+    suspiciousDescription: "Des signaux suspects ont ete detectes.",
+    suspiciousAction: "Ne lancez pas encore. Re-verifiez le hash et faites des scans plus profonds.",
+    dangerousTitle: "Dangereux",
+    dangerousDescription: "Des signaux dangereux multiples ont ete detectes.",
+    dangerousAction: "Supprimez le fichier et ne l'executez pas.",
+    malicious: "Malveillant",
+    suspicious: "Suspect",
+    undetected: "Non detecte",
+    harmless: "Inoffensif",
+    whyVerdict: "Pourquoi ce verdict ?",
+    weightedScore: "Score pondere",
+    noContributors: "Aucun contributeur suspect/dangereux au-dessus de zero.",
+    ignoredGeneric: "Ignore comme generique :",
+    disclaimer: "SafeCheck ne peut pas garantir qu'un fichier est sur. C'est une evaluation de risque.",
+    knownHashLabel: "Comparaison SHA-256 de reference",
+    knownHashPlaceholder: "Collez le hash SHA-256 attendu depuis la source",
+    resetScan: "Reinitialiser l'etat du scan",
+    torrentFileLabel: "Analyser un fichier .torrent",
+    torrentHelp: "Analyse cote client uniquement. Les anomalies torrent sont indicatives, pas preuve de malware.",
+    magnetLabel: "Analyser un lien magnet",
+    magnetPlaceholder: "magnet:?xt=urn:btih:...",
+    analyzeMagnet: "Analyser le magnet",
+    parsingTorrent: "Analyse des metadonnees torrent...",
+    sourceType: "Type de source",
+    trackers: "Trackers",
+    files: "Fichiers",
+    totalSize: "Taille totale",
+    name: "Nom",
+    infoHash: "Info hash :",
+    anomalyAdvisories: "Alertes d'anomalie",
+    noAnomalies: "Aucune regle d'anomalie declenchee.",
+    fileListPreview: "Apercu de la liste de fichiers",
+    path: "Chemin",
+    size: "Taille",
+    scoreLabel: "Score intelligent de reputation",
+    scorePlaceholder: "https://example.com/download/file.zip",
+    scoreUrl: "Noter l'URL",
+    scoring: "Calcul...",
+    scoreHelp: "Le score combine reputation source, threat intel, TLS/redirections et anomalies metadata.",
+    lowRisk: "Risque faible",
+    mediumRisk: "Risque moyen",
+    highRisk: "Risque eleve",
+    topReasons: "Principales raisons de risque",
+    noHighRisk: "Aucun signal de risque eleve detecte.",
+    signalSummary: "Resume des signaux",
+    riskScoreSuffix: "/100 score de risque",
+    sourceVerdict: "Verdict source :",
+    sourceConfidence: "Confiance source :",
+    threatTypes: "Types de menace :",
+    tlsStatus: "Etat TLS :",
+    redirectDepth: "Profondeur de redirection :",
+    mimeMismatch: "MIME incoherent :",
+    domainAge: "Age du domaine :",
+    popularity: "Popularite :",
+    yes: "oui",
+    no: "non",
+    none: "aucun",
+    verifiedSource: "Source verifiee",
+    knownFakeSource: "Fausse source connue",
+    unknownSource: "Source inconnue",
+    enterUrlErr: "Entrez une URL ou un domaine a verifier.",
+    reportFirstErr: "Lancez d'abord une verification de source, puis signalez si besoin.",
+    enterDownloadErr: "Entrez une URL de telechargement a noter.",
+  },
+  es: {
+    close: "Cerrar",
+    toolkitBadge: "Kit de seguridad de archivos",
+    toolkitTitle: "Escaneo + Hash + Reputacion",
+    toolkitSubtitle: "Usa multiples verificaciones para decidir mejor, sin confianza ciega.",
+    tabSource: "URL fuente",
+    tabScan: "Escaneo + Hash",
+    tabTorrent: "Analizador Torrent",
+    tabScore: "Puntuacion",
+    sourceLabel: "Verificar URL de descarga",
+    sourcePlaceholder: "https://example.com/download o example.com",
+    checkSource: "Verificar fuente",
+    checking: "Verificando...",
+    sourceHelp: "Estados: Verificada, Falsa conocida o Desconocida. Desconocida = no esta en DB o baja confianza.",
+    reportLabel: "Reportar este sitio para revision",
+    reportPlaceholder: "Por que esta fuente debe revisarse?",
+    submitReport: "Enviar reporte",
+    submitting: "Enviando...",
+    autoModeration:
+      "La moderacion automatica esta activa. Los reportes se procesan automaticamente con threat-intel y consenso.",
+    dropFile: "Arrastra y suelta un archivo para escanear",
+    dropFileActive: "Suelta tu archivo aqui",
+    browseHelp: "o haz clic para buscar (max 32MB)",
+    hashing: "Calculando hash del archivo...",
+    checkingCache: "Revisando cache de hash de VirusTotal...",
+    uploading: "Subiendo y esperando reporte final de VirusTotal...",
+    scanFailed: "Escaneo fallido",
+    tryAgain: "Intentar de nuevo",
+    safeTitle: "Seguro",
+    safeDescription: "Solo se encontraron detecciones esperadas/genericas.",
+    safeAction: "Procede con cuidado y verifica la integridad antes de ejecutar.",
+    suspiciousTitle: "Sospechoso",
+    suspiciousDescription: "Se encontraron senales sospechosas.",
+    suspiciousAction: "No ejecutes aun. Revisa hash y haz escaneos mas profundos.",
+    dangerousTitle: "Peligroso",
+    dangerousDescription: "Se detectaron multiples senales peligrosas.",
+    dangerousAction: "Elimina el archivo y no lo ejecutes.",
+    malicious: "Malicioso",
+    suspicious: "Sospechoso",
+    undetected: "No detectado",
+    harmless: "Inofensivo",
+    whyVerdict: "Por que este veredicto?",
+    weightedScore: "Puntuacion ponderada",
+    noContributors: "No hubo contribuyentes sospechosos/peligrosos sobre cero puntos.",
+    ignoredGeneric: "Ignorado como generico:",
+    disclaimer:
+      "SafeCheck no puede garantizar que un archivo sea seguro. Es una evaluacion de riesgo basada en senales.",
+    knownHashLabel: "Comparar hash SHA-256 confiable",
+    knownHashPlaceholder: "Pega el hash SHA-256 esperado desde la fuente",
+    resetScan: "Reiniciar estado de escaneo",
+    torrentFileLabel: "Analizar archivo .torrent",
+    torrentHelp: "Analisis solo en cliente. Las anomalias torrent son orientativas, no prueba de malware.",
+    magnetLabel: "Analizar enlace magnet",
+    magnetPlaceholder: "magnet:?xt=urn:btih:...",
+    analyzeMagnet: "Analizar magnet",
+    parsingTorrent: "Analizando metadatos torrent...",
+    sourceType: "Tipo de fuente",
+    trackers: "Trackers",
+    files: "Archivos",
+    totalSize: "Tamano total",
+    name: "Nombre",
+    infoHash: "Info hash:",
+    anomalyAdvisories: "Avisos de anomalias",
+    noAnomalies: "No se activaron reglas de anomalia.",
+    fileListPreview: "Vista previa de archivos",
+    path: "Ruta",
+    size: "Tamano",
+    scoreLabel: "Puntuacion inteligente de reputacion",
+    scorePlaceholder: "https://example.com/download/file.zip",
+    scoreUrl: "Puntuar URL",
+    scoring: "Puntuando...",
+    scoreHelp: "La puntuacion combina reputacion de fuente, threat intel, TLS/redirecciones y anomalias de metadata.",
+    lowRisk: "Riesgo bajo",
+    mediumRisk: "Riesgo medio",
+    highRisk: "Riesgo alto",
+    topReasons: "Principales razones de riesgo",
+    noHighRisk: "No se detectaron senales de alto riesgo.",
+    signalSummary: "Resumen de senales",
+    riskScoreSuffix: "/100 puntuacion de riesgo",
+    sourceVerdict: "Veredicto de fuente:",
+    sourceConfidence: "Confianza de fuente:",
+    threatTypes: "Tipos de amenaza:",
+    tlsStatus: "Estado TLS:",
+    redirectDepth: "Profundidad de redireccion:",
+    mimeMismatch: "MIME no coincide:",
+    domainAge: "Edad del dominio:",
+    popularity: "Popularidad:",
+    yes: "si",
+    no: "no",
+    none: "ninguno",
+    verifiedSource: "Fuente verificada",
+    knownFakeSource: "Fuente falsa conocida",
+    unknownSource: "Fuente desconocida",
+    enterUrlErr: "Ingresa una URL o dominio para verificar.",
+    reportFirstErr: "Primero verifica la fuente y luego reporta si hace falta.",
+    enterDownloadErr: "Ingresa una URL de descarga para puntuar.",
+  },
+} as const;
 
 interface FileCheckerProps {
   isOpen: boolean;
@@ -51,6 +346,10 @@ interface FileCheckerProps {
 }
 
 export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
+  const { locale } = useLingoContext();
+  const activeLocale = locale === "fr" || locale === "es" ? locale : "en";
+  const text = FILE_CHECKER_TEXT[activeLocale];
+
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<ScanStatus>("idle");
   const [progress, setProgress] = useState(0);
@@ -75,8 +374,10 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
   const [reportMessage, setReportMessage] = useState<string | null>(null);
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
 
-  const [expectedFilesInput, setExpectedFilesInput] = useState("");
-  const [actualFilesInput, setActualFilesInput] = useState("");
+  const [reputationInput, setReputationInput] = useState("");
+  const [reputationResult, setReputationResult] = useState<SmartDownloadReputationResult | null>(null);
+  const [reputationError, setReputationError] = useState<string | null>(null);
+  const [isScoringReputation, setIsScoringReputation] = useState(false);
 
   const resetScanState = () => {
     setFile(null);
@@ -211,7 +512,7 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
     setSourceResult(null);
 
     if (!sourceInput.trim()) {
-      setSourceError("Enter a URL or domain to check.");
+      setSourceError(text.enterUrlErr);
       return;
     }
 
@@ -224,14 +525,14 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
     } finally {
       setIsCheckingSource(false);
     }
-  }, [sourceInput]);
+  }, [sourceInput, text.enterUrlErr]);
 
   const handleReportSite = useCallback(async () => {
     setReportMessage(null);
     setSourceError(null);
 
     if (!sourceInput.trim()) {
-      setSourceError("Run a source check first, then report if needed.");
+      setSourceError(text.reportFirstErr);
       return;
     }
 
@@ -247,16 +548,33 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
     } finally {
       setIsSubmittingReport(false);
     }
-  }, [sourceInput, reportNotes]);
+  }, [sourceInput, reportNotes, text.reportFirstErr]);
+
+  const handleReputationScore = useCallback(async () => {
+    setReputationError(null);
+    setReputationResult(null);
+
+    if (!reputationInput.trim()) {
+      setReputationError(text.enterDownloadErr);
+      return;
+    }
+
+    setIsScoringReputation(true);
+    try {
+      const scored = await scoreDownloadReputation(reputationInput);
+      setReputationResult(scored);
+    } catch (error) {
+      setReputationError(
+        error instanceof Error ? error.message : "Failed to score download reputation."
+      );
+    } finally {
+      setIsScoringReputation(false);
+    }
+  }, [reputationInput, text.enterDownloadErr]);
 
   const hashComparison = useMemo(
     () => compareKnownHash(knownHashInput, fileHash),
     [knownHashInput, fileHash]
-  );
-
-  const missingDetection = useMemo(
-    () => detectMissingFiles(expectedFilesInput, actualFilesInput),
-    [expectedFilesInput, actualFilesInput]
   );
 
   if (!isOpen) return null;
@@ -267,27 +585,27 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
       color: "text-safe",
       bg: "bg-safe/10",
       border: "border-safe/30",
-      title: "Safe",
-      description: "Only expected/generic detections were found.",
-      action: "Proceed carefully and verify file integrity before running.",
+      title: text.safeTitle,
+      description: text.safeDescription,
+      action: text.safeAction,
     },
     suspicious: {
       icon: AlertTriangle,
       color: "text-suspicious",
       bg: "bg-suspicious/10",
       border: "border-suspicious/30",
-      title: "Suspicious",
-      description: "Suspicious engine signals were found.",
-      action: "Do not run yet. Re-check the file hash and run deeper scans.",
+      title: text.suspiciousTitle,
+      description: text.suspiciousDescription,
+      action: text.suspiciousAction,
     },
     dangerous: {
       icon: XCircle,
       color: "text-dangerous",
       bg: "bg-dangerous/10",
       border: "border-dangerous/30",
-      title: "Dangerous",
-      description: "Multiple dangerous signals were detected.",
-      action: "Delete the file and do not execute it.",
+      title: text.dangerousTitle,
+      description: text.dangerousDescription,
+      action: text.dangerousAction,
     },
   };
 
@@ -305,21 +623,42 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
       color: "text-safe",
       bg: "bg-safe/10",
       border: "border-safe/30",
-      title: "Verified Source",
+      title: text.verifiedSource,
     },
     "known-fake": {
       icon: ShieldAlert,
       color: "text-dangerous",
       bg: "bg-dangerous/10",
       border: "border-dangerous/30",
-      title: "Known Fake Source",
+      title: text.knownFakeSource,
     },
     unknown: {
       icon: AlertTriangle,
       color: "text-suspicious",
       bg: "bg-suspicious/10",
       border: "border-suspicious/30",
-      title: "Unknown Source",
+      title: text.unknownSource,
+    },
+  };
+
+  const reputationLevelConfig = {
+    low: {
+      label: text.lowRisk,
+      color: "text-safe",
+      bg: "bg-safe/10",
+      border: "border-safe/30",
+    },
+    medium: {
+      label: text.mediumRisk,
+      color: "text-suspicious",
+      bg: "bg-suspicious/10",
+      border: "border-suspicious/30",
+    },
+    high: {
+      label: text.highRisk,
+      color: "text-dangerous",
+      bg: "bg-dangerous/10",
+      border: "border-dangerous/30",
     },
   };
 
@@ -331,7 +670,11 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
     >
       <motion.div
         initial={{ scale: 0.95, opacity: 0 }}
@@ -343,7 +686,7 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
         <button
           onClick={onClose}
           className="absolute top-4 right-4 p-2 rounded-lg hover:bg-muted transition-colors"
-          aria-label="Close"
+          aria-label={text.close}
         >
           <X className="w-5 h-5 text-muted-foreground" />
         </button>
@@ -351,50 +694,46 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
         <div className="text-center mb-8 pr-8">
           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-primary/30 bg-primary/10 mb-4">
             <Shield className="w-4 h-4 text-primary" />
-            <span className="text-sm font-medium text-primary">File Safety Toolkit</span>
+            <span className="text-sm font-medium text-primary">{text.toolkitBadge}</span>
           </div>
-          <h2 className="text-2xl font-bold font-display">Scan + Hash + Torrent Checks</h2>
-          <p className="text-muted-foreground mt-2">
-            Use multiple checks together for better judgment, not blind trust.
-          </p>
+          <h2 className="text-2xl font-bold font-display">{text.toolkitTitle}</h2>
+          <p className="text-muted-foreground mt-2">{text.toolkitSubtitle}</p>
         </div>
 
-        <Tabs defaultValue="scan" className="space-y-4">
+        <Tabs defaultValue="source" className="space-y-4">
           <TabsList className="grid w-full grid-cols-2 md:grid-cols-4 gap-1 h-auto">
             <TabsTrigger value="source" className="gap-2">
               <Link2 className="w-4 h-4" />
-              Source URL
+              {text.tabSource}
             </TabsTrigger>
             <TabsTrigger value="scan" className="gap-2">
               <Search className="w-4 h-4" />
-              File Scan + Hash
+              {text.tabScan}
             </TabsTrigger>
             <TabsTrigger value="torrent" className="gap-2">
               <FileArchive className="w-4 h-4" />
-              Torrent Analyzer
+              {text.tabTorrent}
             </TabsTrigger>
-            <TabsTrigger value="missing" className="gap-2">
-              <ListChecks className="w-4 h-4" />
-              Missing Files
+            <TabsTrigger value="reputation" className="gap-2">
+              <Gauge className="w-4 h-4" />
+              {text.tabScore}
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="source" className="space-y-4">
             <div className="rounded-xl border border-border p-4 bg-background/40 space-y-3">
-              <label className="text-sm font-medium">Check download source URL</label>
+              <label className="text-sm font-medium">{text.sourceLabel}</label>
               <div className="flex gap-2">
                 <Input
-                  placeholder="https://example.com/download or example.com"
+                  placeholder={text.sourcePlaceholder}
                   value={sourceInput}
                   onChange={(event) => setSourceInput(event.target.value)}
                 />
                 <Button onClick={() => void handleSourceCheck()} disabled={isCheckingSource}>
-                  {isCheckingSource ? "Checking..." : "Check Source"}
+                  {isCheckingSource ? text.checking : text.checkSource}
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                Statuses: Verified, Known Fake, or Unknown. Unknown means not in DB or low confidence.
-              </p>
+              <p className="text-xs text-muted-foreground">{text.sourceHelp}</p>
             </div>
 
             {sourceError && (
@@ -444,10 +783,10 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
             <div className="rounded-xl border border-border p-4 bg-background/40 space-y-3">
               <label className="text-sm font-medium flex items-center gap-2">
                 <Flag className="w-4 h-4" />
-                Report this site for review
+                {text.reportLabel}
               </label>
               <Textarea
-                placeholder="Why should this source be reviewed?"
+                placeholder={text.reportPlaceholder}
                 value={reportNotes}
                 onChange={(event) => setReportNotes(event.target.value)}
               />
@@ -457,15 +796,14 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
                   onClick={() => void handleReportSite()}
                   disabled={isSubmittingReport}
                 >
-                  {isSubmittingReport ? "Submitting..." : "Submit Report"}
+                  {isSubmittingReport ? text.submitting : text.submitReport}
                 </Button>
               </div>
               {reportMessage && <p className="text-xs text-safe">{reportMessage}</p>}
             </div>
 
             <div className="rounded-xl border border-border p-4 bg-background/40 text-xs text-muted-foreground">
-              Auto-moderation is enabled. Reports are processed automatically using threat-intel
-              signals and consensus thresholds.
+              {text.autoModeration}
             </div>
           </TabsContent>
 
@@ -490,9 +828,9 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
                   className={`w-10 h-10 mx-auto mb-3 ${isDragging ? "text-primary" : "text-muted-foreground"}`}
                 />
                 <p className="text-base font-medium mb-1">
-                  {isDragging ? "Drop your file here" : "Drag and drop file to scan"}
+                  {isDragging ? text.dropFileActive : text.dropFile}
                 </p>
-                <p className="text-sm text-muted-foreground">or click to browse (max 32MB)</p>
+                <p className="text-sm text-muted-foreground">{text.browseHelp}</p>
               </div>
             )}
 
@@ -500,9 +838,9 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
               <div className="text-center py-8 rounded-xl border border-border bg-background/40">
                 <Loader2 className="w-10 h-10 mx-auto mb-3 text-primary animate-spin" />
                 <p className="text-base font-medium mb-2">
-                  {status === "hashing" && "Computing file hash..."}
-                  {status === "checking-cache" && "Checking VirusTotal hash cache..."}
-                  {status === "uploading" && "Uploading and waiting for final VirusTotal report..."}
+                  {status === "hashing" && text.hashing}
+                  {status === "checking-cache" && text.checkingCache}
+                  {status === "uploading" && text.uploading}
                 </p>
                 {file && (
                   <p className="text-sm text-muted-foreground mb-4">
@@ -515,10 +853,10 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
 
             {status === "error" && (
               <div className="rounded-xl border border-dangerous/30 bg-dangerous/10 p-4">
-                <p className="text-dangerous font-medium">Scan failed</p>
+                <p className="text-dangerous font-medium">{text.scanFailed}</p>
                 <p className="text-sm text-muted-foreground mt-1">{scanError}</p>
                 <Button onClick={resetScanState} variant="outline" className="mt-3">
-                  Try Again
+                  {text.tryAgain}
                 </Button>
               </div>
             )}
@@ -545,28 +883,28 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
                   <div className="mt-5 grid grid-cols-4 gap-3 text-center">
                     <div className="p-3 rounded-lg bg-background/50">
                       <p className="text-xl font-bold text-dangerous">{analysisStats.malicious}</p>
-                      <p className="text-xs text-muted-foreground">Malicious</p>
+                      <p className="text-xs text-muted-foreground">{text.malicious}</p>
                     </div>
                     <div className="p-3 rounded-lg bg-background/50">
                       <p className="text-xl font-bold text-suspicious">{analysisStats.suspicious}</p>
-                      <p className="text-xs text-muted-foreground">Suspicious</p>
+                      <p className="text-xs text-muted-foreground">{text.suspicious}</p>
                     </div>
                     <div className="p-3 rounded-lg bg-background/50">
                       <p className="text-xl font-bold text-safe">{analysisStats.undetected}</p>
-                      <p className="text-xs text-muted-foreground">Undetected</p>
+                      <p className="text-xs text-muted-foreground">{text.undetected}</p>
                     </div>
                     <div className="p-3 rounded-lg bg-background/50">
                       <p className="text-xl font-bold text-muted-foreground">{analysisStats.harmless}</p>
-                      <p className="text-xs text-muted-foreground">Harmless</p>
+                      <p className="text-xs text-muted-foreground">{text.harmless}</p>
                     </div>
                   </div>
                 )}
 
                 {verdictBreakdown && (
                   <details className="mt-4 rounded-lg bg-background/50 p-3">
-                    <summary className="cursor-pointer text-sm font-medium">Why this verdict?</summary>
+                    <summary className="cursor-pointer text-sm font-medium">{text.whyVerdict}</summary>
                     <p className="text-xs text-muted-foreground mt-2">
-                      Weighted score: <strong>{verdictBreakdown.totalScore.toFixed(1)}</strong>
+                      {text.weightedScore}: <strong>{verdictBreakdown.totalScore.toFixed(1)}</strong>
                     </p>
                     {verdictBreakdown.topContributors.length > 0 ? (
                       <div className="mt-2 space-y-1">
@@ -577,11 +915,11 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
                         ))}
                       </div>
                     ) : (
-                      <p className="text-xs mt-2">No suspicious/dangerous contributors above zero points.</p>
+                      <p className="text-xs mt-2">{text.noContributors}</p>
                     )}
                     {verdictBreakdown.ignoredGenericFlags.length > 0 && (
                       <p className="text-xs text-muted-foreground mt-2">
-                        Ignored as generic:{" "}
+                        {text.ignoredGeneric}{" "}
                         {verdictBreakdown.ignoredGenericFlags
                           .map((item) => `${item.engine} (${item.result})`)
                           .join(", ")}
@@ -591,18 +929,16 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
                 )}
 
                 <div className="mt-4 p-3 rounded-lg border border-border/50 bg-background/60">
-                  <p className="text-xs text-muted-foreground">
-                    SafeCheck cannot guarantee a file is safe. This is risk assessment based on available signals.
-                  </p>
+                  <p className="text-xs text-muted-foreground">{text.disclaimer}</p>
                 </div>
               </div>
             )}
 
             <div className="rounded-xl border border-border p-4 bg-background/40">
-              <label className="text-sm font-medium">Known-good SHA-256 hash compare</label>
+              <label className="text-sm font-medium">{text.knownHashLabel}</label>
               <Input
                 className="mt-2 font-mono text-xs"
-                placeholder="Paste expected SHA-256 hash from source page"
+                placeholder={text.knownHashPlaceholder}
                 value={knownHashInput}
                 onChange={(event) => setKnownHashInput(event.target.value)}
               />
@@ -616,40 +952,38 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
 
             <div className="flex gap-3">
               <Button onClick={resetScanState} variant="outline" className="flex-1">
-                Reset Scan State
+                {text.resetScan}
               </Button>
               <Button onClick={onClose} className="flex-1">
-                Close
+                {text.close}
               </Button>
             </div>
           </TabsContent>
 
           <TabsContent value="torrent" className="space-y-4">
             <div className="rounded-xl border border-border p-4 bg-background/40">
-              <label className="text-sm font-medium">Analyze .torrent file</label>
+              <label className="text-sm font-medium">{text.torrentFileLabel}</label>
               <Input type="file" accept=".torrent" className="mt-2" onChange={handleTorrentFileInput} />
-              <p className="text-xs text-muted-foreground mt-2">
-                Parsed client-side only. Torrent anomalies are advisory, not proof of malware.
-              </p>
+              <p className="text-xs text-muted-foreground mt-2">{text.torrentHelp}</p>
             </div>
 
             <div className="rounded-xl border border-border p-4 bg-background/40">
-              <label className="text-sm font-medium">Analyze magnet link</label>
+              <label className="text-sm font-medium">{text.magnetLabel}</label>
               <Textarea
                 className="mt-2"
-                placeholder="magnet:?xt=urn:btih:..."
+                placeholder={text.magnetPlaceholder}
                 value={magnetInput}
                 onChange={(event) => setMagnetInput(event.target.value)}
               />
               <div className="mt-2 flex justify-end">
-                <Button onClick={handleMagnetAnalyze}>Analyze Magnet</Button>
+                <Button onClick={handleMagnetAnalyze}>{text.analyzeMagnet}</Button>
               </div>
             </div>
 
             {isParsingTorrent && (
               <div className="rounded-xl border border-border bg-background/40 p-4 text-sm flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                Parsing torrent metadata...
+                {text.parsingTorrent}
               </div>
             )}
 
@@ -663,37 +997,37 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
               <div className="rounded-xl border border-border p-4 bg-background/40 space-y-4">
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   <div className="p-3 rounded-lg bg-muted/50">
-                    <p className="text-xs text-muted-foreground">Source Type</p>
+                    <p className="text-xs text-muted-foreground">{text.sourceType}</p>
                     <p className="text-sm font-medium">{torrentResult.source}</p>
                   </div>
                   <div className="p-3 rounded-lg bg-muted/50">
-                    <p className="text-xs text-muted-foreground">Trackers</p>
+                    <p className="text-xs text-muted-foreground">{text.trackers}</p>
                     <p className="text-sm font-medium">{torrentResult.trackerCount}</p>
                   </div>
                   <div className="p-3 rounded-lg bg-muted/50">
-                    <p className="text-xs text-muted-foreground">Files</p>
+                    <p className="text-xs text-muted-foreground">{text.files}</p>
                     <p className="text-sm font-medium">{torrentResult.files.length}</p>
                   </div>
                   <div className="p-3 rounded-lg bg-muted/50">
-                    <p className="text-xs text-muted-foreground">Total Size</p>
+                    <p className="text-xs text-muted-foreground">{text.totalSize}</p>
                     <p className="text-sm font-medium">{formatFileSize(torrentResult.totalSize)}</p>
                   </div>
                 </div>
 
                 <div>
-                  <p className="text-sm font-medium">Name</p>
+                  <p className="text-sm font-medium">{text.name}</p>
                   <p className="text-sm text-muted-foreground">{torrentResult.name}</p>
                   {torrentResult.infoHash && (
                     <p className="text-xs text-muted-foreground mt-1">
-                      Info hash: <span className="font-mono">{torrentResult.infoHash}</span>
+                      {text.infoHash} <span className="font-mono">{torrentResult.infoHash}</span>
                     </p>
                   )}
                 </div>
 
                 <div className="rounded-lg border border-suspicious/30 bg-suspicious/10 p-3">
-                  <p className="text-sm font-medium text-suspicious">Anomaly advisories</p>
+                  <p className="text-sm font-medium text-suspicious">{text.anomalyAdvisories}</p>
                   {torrentResult.anomalies.length === 0 ? (
-                    <p className="text-xs mt-1">No anomaly rules triggered from current metadata.</p>
+                    <p className="text-xs mt-1">{text.noAnomalies}</p>
                   ) : (
                     <div className="mt-2 space-y-2">
                       {torrentResult.anomalies.map((anomaly) => (
@@ -709,15 +1043,15 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
                 {torrentResult.files.length > 0 && (
                   <div>
                     <p className="text-sm font-medium mb-2">
-                      File list preview ({Math.min(torrentResult.files.length, MAX_TORRENT_PREVIEW_FILES)} of{" "}
+                      {text.fileListPreview} ({Math.min(torrentResult.files.length, MAX_TORRENT_PREVIEW_FILES)} of{" "}
                       {torrentResult.files.length})
                     </p>
                     <div className="max-h-56 overflow-auto rounded-lg border border-border">
                       <table className="w-full text-xs">
                         <thead className="bg-muted/40 sticky top-0">
                           <tr>
-                            <th className="text-left p-2">Path</th>
-                            <th className="text-left p-2">Size</th>
+                            <th className="text-left p-2">{text.path}</th>
+                            <th className="text-left p-2">{text.size}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -736,86 +1070,112 @@ export default function FileChecker({ isOpen, onClose }: FileCheckerProps) {
             )}
           </TabsContent>
 
-          <TabsContent value="missing" className="space-y-4">
+          <TabsContent value="reputation" className="space-y-4">
             <div className="rounded-xl border border-border p-4 bg-background/40 space-y-3">
-              <label className="text-sm font-medium">Expected file list</label>
-              <Textarea
-                className="font-mono text-xs min-h-28"
-                placeholder={"Paste one expected file path per line\nExample:\nbin/steam_api64.dll\nsetup.exe"}
-                value={expectedFilesInput}
-                onChange={(event) => setExpectedFilesInput(event.target.value)}
-              />
-            </div>
-
-            <div className="rounded-xl border border-border p-4 bg-background/40 space-y-3">
-              <label className="text-sm font-medium">Actual files present</label>
-              <Textarea
-                className="font-mono text-xs min-h-28"
-                placeholder={"Paste one actual file path per line\nExample:\nsetup.exe\nbin/game.exe"}
-                value={actualFilesInput}
-                onChange={(event) => setActualFilesInput(event.target.value)}
-              />
-            </div>
-
-            <div className="rounded-xl border border-border p-4 bg-background/40 space-y-3">
-              <p className="text-sm font-medium">Comparison summary</p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
-                <div className="p-3 rounded-lg bg-muted/50">
-                  <p className="text-xs text-muted-foreground">Expected</p>
-                  <p className="text-base font-semibold">{missingDetection.expectedCount}</p>
-                </div>
-                <div className="p-3 rounded-lg bg-muted/50">
-                  <p className="text-xs text-muted-foreground">Actual</p>
-                  <p className="text-base font-semibold">{missingDetection.actualCount}</p>
-                </div>
-                <div className="p-3 rounded-lg bg-muted/50">
-                  <p className="text-xs text-muted-foreground">Missing</p>
-                  <p className="text-base font-semibold text-dangerous">
-                    {missingDetection.missingFiles.length}
-                  </p>
-                </div>
-                <div className="p-3 rounded-lg bg-muted/50">
-                  <p className="text-xs text-muted-foreground">Likely Quarantined</p>
-                  <p className="text-base font-semibold text-suspicious">
-                    {missingDetection.likelyQuarantined.length}
-                  </p>
-                </div>
+              <label className="text-sm font-medium">{text.scoreLabel}</label>
+              <div className="flex gap-2">
+                <Input
+                  placeholder={text.scorePlaceholder}
+                  value={reputationInput}
+                  onChange={(event) => setReputationInput(event.target.value)}
+                />
+                <Button onClick={() => void handleReputationScore()} disabled={isScoringReputation}>
+                  {isScoringReputation ? text.scoring : text.scoreUrl}
+                </Button>
               </div>
+              <p className="text-xs text-muted-foreground">{text.scoreHelp}</p>
+            </div>
 
-              {missingDetection.missingFiles.length > 0 && (
-                <div className="rounded-lg border border-dangerous/30 bg-dangerous/10 p-3">
-                  <p className="text-xs font-medium text-dangerous">Missing files</p>
-                  <p className="text-xs mt-1 font-mono break-all">
-                    {missingDetection.missingFiles.slice(0, 12).join(", ")}
-                    {missingDetection.missingFiles.length > 12 ? " ..." : ""}
-                  </p>
+            {reputationError && (
+              <div className="rounded-xl border border-dangerous/30 bg-dangerous/10 p-4 text-sm text-dangerous">
+                {reputationError}
+              </div>
+            )}
+
+            {reputationResult && (
+              <div className="space-y-4">
+                <div
+                  className={`rounded-xl border p-4 ${reputationLevelConfig[reputationResult.level].bg} ${reputationLevelConfig[reputationResult.level].border}`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className={`text-sm font-semibold ${reputationLevelConfig[reputationResult.level].color}`}>
+                        {reputationLevelConfig[reputationResult.level].label}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Domain: <span className="font-mono">{reputationResult.domain}</span>
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-3xl font-bold ${reputationLevelConfig[reputationResult.level].color}`}>
+                        {reputationResult.score}
+                      </p>
+                      <p className="text-xs text-muted-foreground">{text.riskScoreSuffix}</p>
+                    </div>
+                  </div>
                 </div>
-              )}
 
-              {missingDetection.likelyQuarantined.length > 0 && (
-                <div className="rounded-lg border border-suspicious/30 bg-suspicious/10 p-3">
-                  <p className="text-xs font-medium text-suspicious">
-                    Likely antivirus quarantine candidates
-                  </p>
-                  <p className="text-xs mt-1 font-mono break-all">
-                    {missingDetection.likelyQuarantined.join(", ")}
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    Check antivirus quarantine and restore only if hash/verdict checks are trusted.
-                  </p>
+                <div className="rounded-xl border border-border p-4 bg-background/40 space-y-3">
+                  <p className="text-sm font-medium">{text.topReasons}</p>
+                  {reputationResult.reasons.length > 0 ? (
+                    <div className="space-y-2">
+                      {reputationResult.reasons.slice(0, 5).map((reason) => (
+                        <div key={reason.id} className="rounded-lg border border-border p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <p className="text-sm font-medium">{reason.label}</p>
+                            <p className="text-xs font-semibold text-muted-foreground">+{reason.points}</p>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-1">{reason.detail}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-safe">{text.noHighRisk}</p>
+                  )}
                 </div>
-              )}
 
-              {missingDetection.missingFiles.length === 0 &&
-                missingDetection.expectedCount > 0 &&
-                missingDetection.actualCount > 0 && (
-                  <div className="rounded-lg border border-safe/30 bg-safe/10 p-3">
-                    <p className="text-xs font-medium text-safe">
-                      No missing files detected from current lists.
+                <div className="rounded-xl border border-border p-4 bg-background/40">
+                  <p className="text-sm font-medium mb-2">{text.signalSummary}</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-muted-foreground">
+                    <p>
+                      {text.sourceVerdict} <span className="font-medium">{reputationResult.signals.sourceVerdict}</span>
+                    </p>
+                    <p>
+                      {text.sourceConfidence}{" "}
+                      <span className="font-medium">{reputationResult.signals.sourceConfidence}</span>
+                    </p>
+                    <p>
+                      {text.threatTypes}{" "}
+                      <span className="font-medium">
+                        {reputationResult.signals.threatTypes.length > 0
+                          ? reputationResult.signals.threatTypes.join(", ")
+                          : text.none}
+                      </span>
+                    </p>
+                    <p>
+                      {text.tlsStatus} <span className="font-medium">{reputationResult.signals.tlsStatus}</span>
+                    </p>
+                    <p>
+                      {text.redirectDepth} <span className="font-medium">{reputationResult.signals.redirectDepth}</span>
+                    </p>
+                    <p>
+                      {text.mimeMismatch}{" "}
+                      <span className="font-medium">
+                        {reputationResult.signals.mimeMismatch ? text.yes : text.no}
+                      </span>
+                    </p>
+                    <p>
+                      {text.domainAge}{" "}
+                      <span className="font-medium">{reputationResult.signals.domainAgeStatus}</span>
+                    </p>
+                    <p>
+                      {text.popularity}{" "}
+                      <span className="font-medium">{reputationResult.signals.popularityStatus}</span>
                     </p>
                   </div>
-                )}
-            </div>
+                </div>
+              </div>
+            )}
           </TabsContent>
         </Tabs>
       </motion.div>

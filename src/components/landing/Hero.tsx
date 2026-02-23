@@ -1,3 +1,5 @@
+"use i18n";
+
 import { motion } from "framer-motion";
 import { Shield, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";

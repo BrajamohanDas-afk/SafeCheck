@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "@/index.css";
+import { LingoProvider } from "@lingo.dev/compiler/react";
 
 export const metadata: Metadata = {
   title: "SafeCheck",
@@ -19,7 +20,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <LingoProvider>{children}</LingoProvider>
+      </body>
     </html>
   );
 }
